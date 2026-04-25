@@ -55,9 +55,9 @@ struct ComponentInfo {
     bool trivially_relocatable = false;
     std::vector<Property> properties;
 
-    const Property* find_property(std::string_view name) const {
+    const Property* find_property(std::string_view property_name) const {
         for (const auto& p : properties) {
-            if (p.name == name) return &p;
+            if (p.name == property_name) return &p;
         }
         return nullptr;
     }

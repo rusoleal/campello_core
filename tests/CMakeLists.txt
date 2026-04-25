@@ -35,6 +35,6 @@ target_link_libraries(campello_core_tests PRIVATE campello::core Catch2::Catch2W
 
 catch_discover_tests(campello_core_tests)
 
-# Android NDK smoke test (compile-only, no Catch2 dependency)
-add_executable(android_smoke android_smoke.cpp)
-target_link_libraries(android_smoke PRIVATE campello::core)
+# Cross-platform compile-only smoke test (Android, iOS, Windows ARM64, etc.)
+add_executable(smoke_test android_smoke.cpp)
+target_link_libraries(smoke_test PRIVATE campello::core)

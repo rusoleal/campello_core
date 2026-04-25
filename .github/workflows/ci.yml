@@ -50,7 +50,7 @@ jobs:
             cxx: cl
             cmake_args: >-
               -DCMAKE_BUILD_TYPE=Debug
-              -DCMAKE_CXX_FLAGS="-W4 -WX"
+              -DCMAKE_CXX_FLAGS="-W4 -WX -EHsc"
 
           # ── macOS ARM64 + AppleClang ──
           - os: macos-latest
@@ -112,7 +112,7 @@ jobs:
         run: |
           cmake -B build -S . -A ARM64 \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_FLAGS="-W4 -WX" \
+            -DCMAKE_CXX_FLAGS="-W4 -WX -EHsc" \
             -DCAMPELLO_CORE_BUILD_TESTS=OFF \
             -DCAMPELLO_CORE_BUILD_EXAMPLES=OFF \
             -DCAMPELLO_CORE_BUILD_BENCHMARKS=OFF
@@ -121,7 +121,7 @@ jobs:
         run: cmake --build build --config Debug --parallel
 
       - name: Compile smoke test
-        run: cmake --build build --target android_smoke --config Debug --parallel
+        run: cmake --build build --target smoke_test --config Debug --parallel
 
   android:
     strategy:
@@ -157,4 +157,35 @@ jobs:
             -DCAMPELLO_CORE_BUILD_BENCHMARKS=OFF
 
       - name: Build smoke test
-        run: cmake --build build --target android_smoke --parallel
+        run: cmake --build build --target smoke_test --parallel
+
+  ios:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: ios-device
+            archs: arm64
+          - name: ios-simulator
+            archs: x86_64;arm64
+    name: ${{ matrix.platform.name }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Configure CMake (iOS)
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.platform.archs }}" \
+            -DCAMPELLO_CORE_BUILD_TESTS=OFF \
+            -DCAMPELLO_CORE_BUILD_EXAMPLES=OFF \
+            -DCAMPELLO_CORE_BUILD_BENCHMARKS=OFF
+
+      - name: Build smoke test
+        run: cmake --build build --target smoke_test --parallel

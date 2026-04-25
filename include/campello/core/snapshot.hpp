@@ -215,11 +215,18 @@ inline void World::restore(std::string_view json) {
             // Allocate temp buffer for component
             std::vector<std::byte> buffer(info->size);
             void* ptr = buffer.data();
+            bool aligned_alloc = false;
             if (info->alignment > alignof(std::max_align_t)) {
                 // Over-aligned type — use aligned allocation
+#ifdef _WIN32
+                ptr = _aligned_malloc(info->size, info->alignment);
+                if (!ptr) continue;
+#else
                 void* aligned = nullptr;
                 if (posix_memalign(&aligned, info->alignment, info->size) != 0) continue;
                 ptr = aligned;
+#endif
+                aligned_alloc = true;
             }
 
             // Default-construct
@@ -239,8 +246,12 @@ inline void World::restore(std::string_view json) {
                 type_info->destruct(ptr);
             }
 
-            if (ptr != buffer.data()) {
+            if (aligned_alloc) {
+#ifdef _WIN32
+                _aligned_free(ptr);
+#else
                 free(ptr);
+#endif
             }
         }
     }
