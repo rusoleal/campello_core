@@ -437,23 +437,22 @@ public:
         // For single-component queries, skip the redundant has_component check
         if constexpr (req_count == 1) {
             matching_archetypes_.assign(candidate_set->begin(), candidate_set->end());
-            return;
-        }
+        } else {
+            for (ArchetypeId id : *candidate_set) {
+                Archetype* arch = storage_->get_archetype(id);
+                if (!arch) continue;
 
-        for (ArchetypeId id : *candidate_set) {
-            Archetype* arch = storage_->get_archetype(id);
-            if (!arch) continue;
-
-            bool matches = true;
-            for (std::size_t r = 0; r < req_count; ++r) {
-                if (r == candidate_idx) continue; // already know this one matches
-                if (!arch->has_component(required[r])) {
-                    matches = false;
-                    break;
+                bool matches = true;
+                for (std::size_t r = 0; r < req_count; ++r) {
+                    if (r == candidate_idx) continue; // already know this one matches
+                    if (!arch->has_component(required[r])) {
+                        matches = false;
+                        break;
+                    }
                 }
-            }
-            if (matches) {
-                matching_archetypes_.push_back(id);
+                if (matches) {
+                    matching_archetypes_.push_back(id);
+                }
             }
         }
     }

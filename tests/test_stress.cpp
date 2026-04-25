@@ -431,9 +431,16 @@ TEST_CASE("Stress: resource init and get after many operations") {
 
 // Phase 1: Remaining gap tests -------------------------------------------------
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
 struct alignas(64) AlignedData {
     std::uint64_t value = 0;
 };
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 namespace campello::core {
 template<> struct ComponentTraits<AlignedData> : ComponentTraitsBase<AlignedData> {

@@ -36,8 +36,9 @@ public:
         if (dense_idx == invalid_key) return nullptr;
         if constexpr (!std::is_void_v<Value>) {
             return &dense_values_[dense_idx];
+        } else {
+            return reinterpret_cast<Value*>(this); // non-void fallback, shouldn't happen
         }
-        return reinterpret_cast<Value*>(this); // non-void fallback, shouldn't happen
     }
 
     const Value* get(key_type key) const {
