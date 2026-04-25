@@ -75,6 +75,12 @@ struct ChunkTicks {
 // Archetype: defines a set of components and holds chunks
 // ------------------------------------------------------------------
 struct Archetype {
+    Archetype() = default;
+    Archetype(const Archetype&) = delete;
+    Archetype& operator=(const Archetype&) = delete;
+    Archetype(Archetype&&) = default;
+    Archetype& operator=(Archetype&&) = default;
+
     ArchetypeId id = 0;
     std::vector<ComponentId> components; // sorted
     std::vector<Chunk> chunks;

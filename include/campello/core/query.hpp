@@ -61,8 +61,8 @@ class Query {
 public:
     using item_type = std::tuple<Cs&...>;
 
-    Query(ArchetypeStorage* storage, ComponentRegistry* registry, std::uint64_t* version)
-        : storage_(storage), registry_(registry), world_version_(version) {}
+    Query(ArchetypeStorage* storage, ComponentRegistry* registry, std::uint64_t* world_version)
+        : storage_(storage), registry_(registry), world_version_(world_version) {}
 
     // Pre-populate matching archetypes from a world-level cache.
     // `version` must be the current archetype_version_ of the world.
@@ -417,7 +417,7 @@ public:
         ComponentId required[] = { detail::component_access<Cs>::id()... };
         constexpr std::size_t req_count = sizeof...(Cs);
 
-        if (req_count == 0) return;
+        if constexpr (req_count == 0) return;
 
         // Use the per-component archetype index to find candidates.
         // Pick the component with the fewest archetypes as the starting set,
@@ -435,7 +435,7 @@ public:
         if (!candidate_set) return;
 
         // For single-component queries, skip the redundant has_component check
-        if (req_count == 1) {
+        if constexpr (req_count == 1) {
             matching_archetypes_.assign(candidate_set->begin(), candidate_set->end());
             return;
         }
