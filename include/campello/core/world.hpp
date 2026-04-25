@@ -80,6 +80,8 @@ public:
         register_component<Children>();
     }
 
+    ~World() { clear(); }
+
     // --- Entity lifecycle ---
 
     Entity spawn() {
