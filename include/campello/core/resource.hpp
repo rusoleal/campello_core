@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <atomic>
 #include <memory>
 #include <type_traits>
 #include <unordered_map>
