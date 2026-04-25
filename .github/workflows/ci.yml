@@ -50,7 +50,7 @@ jobs:
             cxx: cl
             cmake_args: >-
               -DCMAKE_BUILD_TYPE=Debug
-              -DCMAKE_CXX_FLAGS="/W4 /WX"
+              -DCMAKE_CXX_FLAGS="-W4 -WX"
 
           # ── macOS ARM64 + AppleClang ──
           - os: macos-latest
@@ -112,7 +112,7 @@ jobs:
         run: |
           cmake -B build -S . -A ARM64 \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_FLAGS="/W4 /WX" \
+            -DCMAKE_CXX_FLAGS="-W4 -WX" \
             -DCAMPELLO_CORE_BUILD_TESTS=OFF \
             -DCAMPELLO_CORE_BUILD_EXAMPLES=OFF \
             -DCAMPELLO_CORE_BUILD_BENCHMARKS=OFF
