@@ -1,0 +1,18 @@
+# Build directories
+build/
+build_*/
+cmake-build-*/
+out/
+
+# IDE
+.idea/
+.vscode/
+*.user
+*.suo
+*.ncb
+
+# macOS
+.DS_Store
+
+# Dependencies that might be vendored locally
+_deps/
