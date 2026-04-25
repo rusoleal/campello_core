@@ -252,7 +252,20 @@ inline void ArchetypeStorage::compute_chunk_layout(const Archetype& arch, Chunk&
 inline void ArchetypeStorage::allocate_chunk(Archetype& arch, const ComponentRegistry& registry) {
     Chunk chunk;
     compute_chunk_layout(arch, chunk, registry);
-    chunk.data = static_cast<std::byte*>(allocator_.allocate(chunk.total_size, alignof(std::max_align_t)));
+
+    // Ensure chunk base is aligned to the largest component alignment so that
+    // every component array is absolutely aligned (not just relative to chunk.data).
+    std::size_t max_align = alignof(std::max_align_t);
+    for (ComponentId cid : arch.components) {
+        const auto* info = registry.info(cid);
+        if (info) max_align = std::max(max_align, info->alignment);
+    }
+
+    // Over-allocate by max_align so we can manually align the base pointer.
+    void* raw = allocator_.allocate(chunk.total_size + max_align, alignof(std::max_align_t));
+    std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(raw);
+    std::size_t padding = (max_align - (addr % max_align)) % max_align;
+    chunk.data = static_cast<std::byte*>(raw) + padding;
     chunk.count = 0;
 
     // Allocate parallel tick arrays
