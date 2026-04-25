@@ -34,7 +34,3 @@ add_executable(campello_core_tests ${TEST_SOURCES})
 target_link_libraries(campello_core_tests PRIVATE campello::core Catch2::Catch2WithMain)
 
 catch_discover_tests(campello_core_tests)
-
-# Cross-platform compile-only smoke test (Android, iOS, Windows ARM64, etc.)
-add_executable(smoke_test android_smoke.cpp)
-target_link_libraries(smoke_test PRIVATE campello::core)

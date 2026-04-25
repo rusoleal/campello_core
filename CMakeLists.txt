@@ -80,3 +80,7 @@ option(CAMPELLO_CORE_BUILD_EXAMPLES "Build examples" ON)
 if(CAMPELLO_CORE_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
+
+# Cross-platform compile-only smoke test (used by Android, iOS, Windows ARM64 CI)
+add_executable(smoke_test tests/android_smoke.cpp)
+target_link_libraries(smoke_test PRIVATE campello::core)
