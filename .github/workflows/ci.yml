@@ -159,6 +159,59 @@ jobs:
       - name: Build smoke test
         run: cmake --build build --target smoke_test --parallel
 
+  wasm:
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: wasm
+            pthread: OFF
+            run_smoke: true
+          - name: wasm-pthreads
+            pthread: ON
+            run_smoke: false
+    name: ${{ matrix.config.name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+          actions-cache-folder: 'emsdk-cache'
+
+      - name: Verify Emscripten
+        run: emcc --version
+
+      - name: Configure CMake (WASM)
+        run: |
+          if [ "${{ matrix.config.pthread }}" = "ON" ]; then
+            PTHREAD_CXX="-pthread"
+            PTHREAD_LD="-pthread"
+          else
+            PTHREAD_CXX=""
+            PTHREAD_LD=""
+          fi
+
+          emcmake cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="${PTHREAD_CXX}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${PTHREAD_LD}" \
+            -DCAMPELLO_CORE_BUILD_TESTS=OFF \
+            -DCAMPELLO_CORE_BUILD_EXAMPLES=ON \
+            -DCAMPELLO_CORE_BUILD_BENCHMARKS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Build smoke test
+        run: cmake --build build --target smoke_test --parallel
+
+      - name: Run smoke test (Node.js)
+        if: matrix.config.run_smoke
+        run: node build/smoke_test.js
+
   ios:
     strategy:
       fail-fast: false
