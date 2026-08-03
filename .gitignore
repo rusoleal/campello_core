@@ -17,3 +17,13 @@ out/
 
 # Dependencies that might be vendored locally
 _deps/
+
+# Instruments/xctrace profiling output
+*.trace/
+*_cpu.xml
+*_process.xml
+*_dyld.xml
+profile_cpu.txt
+profile_samples.txt
+addresses.txt
+symbols.txt
