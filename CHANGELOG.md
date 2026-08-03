@@ -5,14 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-03
 
 ### Added
+- `Removed<C>` query filter — `query<...>().removed<C>().with_last_run_tick(t)`, composable with `added`/`changed` and supported by `each()`, `each_with_entity()`, range-for, and `count()`. Iterates the world-level removal event buffer directly instead of requiring manual `world.removed<C>()` polling.
 - Long-running stress executable `campello_core_long_stress` (`tests/test_long_stress.cpp`)
   - Configurable duration via `--minutes N` and reproducible seeds via `--seed S`
   - Mixed workload: spawn, mutate, despawn, schedule execution, queries, events, resources
   - Per-phase invariant checks against an external oracle
 - Prefab/clone example `examples/ex_11_prefab.cpp` demonstrating `World::clone()` and `World::clone_many()`
+
+### Changed
+- `World::removed<T>()` now returns `std::vector<Entity>` by value (was `const std::vector<Entity>&`) and takes an optional `Tick since = 0` parameter, so callers can query removals since an arbitrary tick rather than only the current one. **Breaking:** code binding the old return value to a reference member or relying on reference semantics needs updating.
 
 ### Fixed
 - Changed `null_entity` from `0` to `std::numeric_limits<Entity>::max()` to prevent collision with the first spawned entity. This fixes a critical swap-back metadata corruption bug: when entity 0 (value `0`) was swapped during archetype moves, the caller treated it as `null_entity` and skipped updating its `entity_meta_`, leading to stale component pointers.
@@ -50,4 +54,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Spatial grid collision in demo → 2344 FPS (was 12 FPS with naive O(n²))
 - `each_with_entity()` for particle/emitter systems → 6044 FPS (2.6× improvement)
 
+[0.2.0]: https://github.com/rusoleal/campello/releases/tag/v0.2.0
 [0.1.0]: https://github.com/rusoleal/campello/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(campello_core
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Core ECS library for the Campello engine"
     HOMEPAGE_URL "https://github.com/rusoleal/campello_core"
     LANGUAGES CXX

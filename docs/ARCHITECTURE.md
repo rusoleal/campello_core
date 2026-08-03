@@ -239,12 +239,22 @@ Filters are checked per-row inside the iteration loop.
 ### Removed tracking
 
 ```cpp
-world.remove<Health>(e);        // records e in removed_ buffer
-auto& list = world.removed<Health>(); // entities that lost Health this tick
-world.increment_change_tick();  // clears removed_ buffers
+world.remove<Health>(e);              // records (e, tick) in removed_ buffer
+auto list = world.removed<Health>();  // entities that lost Health since tick 0 (by value)
+world.increment_change_tick();        // clears removed_ buffers
 ```
 
-There is **no `Removed<C>` query filter** — use `world.removed<C>()` and iterate the returned vector manually.
+`removed<T>(Tick since = 0)` returns by value and accepts an optional baseline tick, so callers can ask for removals since an arbitrary point rather than only "this tick".
+
+### Removed query filter
+
+```cpp
+world.query<Position>()
+    .removed<Velocity>()         // entities that lost Velocity since last_run_tick
+    .with_last_run_tick(tick);
+```
+
+`removed<C>()` iterates the world-level removal event buffer directly, verifying the entity is still alive and still matches the query's other required components. It composes with `added`/`changed` and works with `each()`, `each_with_entity()`, range-for, and `count()`.
 
 ---
 
@@ -341,5 +351,4 @@ ArchetypeStorage
 1. **Self-referential types** — components with pointers to their own members become dangling after archetype moves (swap-back compaction). This is an inherent SoA limitation.
 2. **Throwing move constructors** — exceptions during `insert`/`remove` propagate out without strong exception safety guarantee.
 3. **Chunk memory not reclaimed** — empty chunks are not freed until the world is destroyed or `clear()` is called. Heavy despawning without respawning can waste memory.
-4. **No `Removed<C>` query filter** — only `world.removed<C>()` vector access.
-5. **Entity order instability** — swap-back compaction changes row indices.
+4. **Entity order instability** — swap-back compaction changes row indices.
