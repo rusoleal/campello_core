@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <type_traits>
 
 namespace campello::core {
