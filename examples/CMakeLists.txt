@@ -11,6 +11,7 @@ set(EXAMPLES
     ex_08_thread_pool
     ex_09_save_load
     ex_10_demo_game
+    ex_11_prefab
 )
 
 foreach(ex ${EXAMPLES})

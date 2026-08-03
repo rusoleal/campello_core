@@ -12,7 +12,7 @@ using ArchetypeId = std::uint64_t;
 using TypeId = std::uint64_t;
 using Tick = std::uint32_t;
 
-constexpr Entity null_entity = 0;
+constexpr Entity null_entity = std::numeric_limits<Entity>::max();
 
 inline Entity make_entity(std::uint32_t index, std::uint32_t generation) noexcept {
     return (static_cast<Entity>(generation) << 32) | index;

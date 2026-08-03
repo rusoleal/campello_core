@@ -4,9 +4,10 @@ This guide explains how to structure data and use the API for maximum performanc
 
 ## Quick Rules
 
-1. **Use `each()` instead of range-for** — ~10× faster due to iterator overhead
-2. **Batch spawns with `spawn_many`** — ~2–5× faster than looped `spawn_with`
-3. **Prefer fewer, larger archetypes** — query match cost scales linearly with archetype count
+1. **Use `each()` instead of range-for** — ~16× faster due to iterator overhead
+2. **Batch spawns with `spawn_many`** — much faster than looped `spawn_with`
+3. **Batch clones with `clone_many`** — much faster than looped `clone`
+4. **Prefer fewer, larger archetypes** — query match cost scales linearly with archetype count
 4. **Keep components small** — larger components mean fewer entities per chunk and worse cache locality
 5. **Mark changes explicitly** — `mark_changed<T>(e)` is cheaper than full re-insertion
 6. **Use `each_par` for CPU-heavy work** — chunk-level parallelism with no synchronization needed
@@ -15,16 +16,23 @@ This guide explains how to structure data and use the API for maximum performanc
 
 ## Benchmark Baselines
 
-Measured on Apple M3, Release-like build (`-O2`):
+Measured on Intel Core i5-8500B @ 3.0 GHz (x86_64), AppleClang 17, macOS, Release-like build (`-O2 -DNDEBUG`) in `build-release/`:
 
 | Operation | Throughput | Notes |
 |---|---|---|
-| Raw AoS iteration | ~1.06M entities/s | Hand-rolled struct-of-arrays |
-| Raw SoA iteration | ~698k entities/s | Separate vectors |
-| ECS `each()` | ~569k entities/s | ~1.9× slower than AoS |
-| ECS range-for | ~101k entities/s | ~10× slower than `each()` |
-| Query match (500 archs) | ~2.2k entities/s | Linear archetype scan |
-| Spawn 10k × 3 comp | ~13 ops/s | 75ms total |
+| Raw AoS iteration (100k) | ~964M entities/s | Hand-rolled struct-of-arrays, Position+Velocity |
+| Raw SoA iteration (100k) | ~1.02B entities/s | Separate vectors, Position+Velocity |
+| ECS `each()` (100k) | ~1.73B entities/s | ~1.7× faster than SoA on this config |
+| ECS range-for (100k) | ~107M entities/s | ~16× slower than `each()` |
+| Query match (500 archetypes) | ~186B entities/s | 50k entities, linear archetype scan |
+| Query 8 components (10k) | ~23B entities/s | All 8 components in the query |
+| Spawn 10k × 3 comp | ~1.22M entities/s | Looped `spawn_with`, ~8.2 ms per 10k |
+| `spawn_many` 10k × 3 comp | ~9.60M entities/s | Bulk path, ~1.0 ms per 10k |
+| `clone_many` 10k × 3 comp | ~6.75M entities/s | Bulk clone path, ~1.5 ms per 10k |
+| `clone_many` 10k × 1 comp | ~18.1M entities/s | Bulk clone path, ~0.55 ms per 10k |
+| Schedule 50 systems (10k) | ~14,347 frames/s | 50 independent systems, one frame |
+
+**Note on units:** nanobench reports per-operation rates. For iteration and query benchmarks the "operation" is one full pass over the stated entity count, so the table already converts `ops/s × entity_count` into `entities/s`. For spawn, the operation is one batch of 10k spawns.
 
 ---
 
@@ -48,6 +56,18 @@ auto entities = world.spawn_many<Position, Velocity>(10000,
 ```
 
 `spawn_many` resolves the archetype once and bulk-allocates into chunks.
+
+### ✅ Fast: bulk clone
+
+```cpp
+auto originals = world.query<Position, Velocity>();
+vector<Entity> src;
+originals.each([&](Entity e, Position&, Velocity&) { src.push_back(e); });
+
+auto clones = world.clone_many(src); // resolves once, copies components in bulk
+```
+
+`clone_many` copies components in chunk-sized batches. Trivially relocatable types use a log(N) `memcpy` replication pattern, while non-trivial types use per-row copy construction.
 
 ---
 
@@ -155,13 +175,13 @@ world.mark_changed<Health>(e);
 
 ## Memory Overhead
 
-Typical overhead per entity (dense population, 10k+ entities):
+Typical overhead per entity (dense population, 10k+ entities, from `bm_memory`):
 
 | Archetype | Raw SoA | ECS | Overhead |
 |---|---|---|---|
 | 1 int component | 4 B | ~38 B | ~9.5× |
 | Position + Velocity | 24 B | ~67 B | ~2.8× |
-| 8 components | ~72 B | ~165 B | ~2.3× |
+| 8 components (52 B) | 52 B | ~165 B | ~3.2× |
 
 Overhead sources:
 - **Entity array** — 8 bytes per slot
@@ -234,7 +254,7 @@ world.despawn_many(to_despawn);
 
 ## Summary Checklist
 
-- [ ] Use `spawn_many` / `insert_many` / `despawn_many` for batch operations
+- [ ] Use `spawn_many` / `clone_many` / `insert_many` / `despawn_many` for batch operations
 - [ ] Use `each()` instead of range-for for hot loops
 - [ ] Keep components small; split hot/cold data
 - [ ] Use `mark_changed` instead of re-insertion

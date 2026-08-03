@@ -15,6 +15,7 @@ set(BM_SOURCES
     bm_query.cpp
     bm_schedule.cpp
     bm_memory.cpp
+    bm_profile.cpp
 )
 
 # One executable per benchmark file (avoids duplicate main symbols)

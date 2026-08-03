@@ -47,8 +47,11 @@ Concise reference for the public API. For detailed behavior, see the header file
 world.query<Position>()
     .added<Position>()           // only entities added since last_run_tick
     .changed<Position>()         // only entities changed since last_run_tick
+    .removed<Velocity>()         // entities that lost Velocity since last_run_tick
     .with_last_run_tick(tick);   // set comparison baseline
 ```
+
+`removed<T>()` matches entities that currently satisfy the query and had `T` removed since `last_run_tick`. It composes with `added`/`changed` and works with `each()`, `each_with_entity()`, range-for, and `count()`.
 
 Filters return by value: chain them in one expression or store the result.
 
@@ -58,7 +61,7 @@ Filters return by value: chain them in one expression or store the result.
 |---|---|---|
 | `change_tick` | `Tick change_tick() const` | Current global tick |
 | `increment_change_tick` | `void increment_change_tick()` | Advance tick, clear removed |
-| `removed` | `const vector<Entity>& removed<T>()` | Entities that lost T this tick |
+| `removed` | `vector<Entity> removed<T>(Tick since = 0)` | Entities that lost T since `since` |
 
 ### Hooks
 
@@ -87,9 +90,17 @@ Filters return by value: chain them in one expression or store the result.
 
 | Method | Signature | Description |
 |---|---|---|
-| `send` | `void send<T>(T&&)` | Emit event |
-| `read_events` | `span<const T> read_events<T>()` | Read unprocessed events |
-| `clear_events` | `void clear_events<T>()` | Clear event buffer |
+| `send` | `void send<E>(E&&)` | Emit event |
+| `emit` | `void emit<E>(Args&&...)` | Construct and emit event in place |
+| `event_reader` | `EventReader<E> event_reader<E>() const` | Read unprocessed events |
+| `clear_events` | `void clear_events()` | Clear all event buffers |
+
+```cpp
+world.send<MyEvent>(MyEvent{7});
+world.emit<MyEvent>(7);                   // equivalent
+for (const auto& ev : world.event_reader<MyEvent>()) { /* ... */ }
+world.clear_events();                     // clears all event buffers
+```
 
 ### Snapshots
 

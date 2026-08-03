@@ -135,7 +135,7 @@ inline std::string World::snapshot() const {
             const Chunk& chunk = arch->chunks[chunk_idx];
             if (chunk.count == 0) continue;
 
-            const Entity* entities = reinterpret_cast<const Entity*>(chunk.data + chunk.offsets[0]);
+            const Entity* entities = reinterpret_cast<const Entity*>(chunk.data + arch->offsets[0]);
             for (std::uint32_t row = 0; row < chunk.count; ++row) {
                 Entity e = entities[row];
                 if (!is_alive(e)) continue;
@@ -153,7 +153,7 @@ inline std::string World::snapshot() const {
                     const ComponentInfo* info = reflect_registry_.info(cid);
                     if (!info) continue;
 
-                    const void* ptr = chunk.data + chunk.offsets[ci + 1] + row * info->size;
+                    const void* ptr = chunk.data + arch->offsets[ci + 1] + row * info->size;
                     std::string comp_json = serialize_component(*info, ptr, reg);
 
                     if (!first_comp) result += ',';
@@ -267,7 +267,7 @@ inline void World::clear() {
         for (std::size_t chunk_idx = 0; chunk_idx < arch->chunks.size(); ++chunk_idx) {
             Chunk& chunk = arch->chunks[chunk_idx];
             if (chunk.count == 0) continue;
-            Entity* entities = reinterpret_cast<Entity*>(chunk.data + chunk.offsets[0]);
+            Entity* entities = reinterpret_cast<Entity*>(chunk.data + arch->offsets[0]);
             for (std::uint32_t row = 0; row < chunk.count; ++row) {
                 Entity e = entities[row];
                 if (is_alive(e)) {
@@ -290,7 +290,7 @@ inline void World::clear() {
                     ComponentId cid = arch->components[ci];
                     const auto* info = component_registry_.info(cid);
                     if (!info || info->trivially_destructible) continue;
-                    void* ptr = chunk.data + chunk.offsets[ci + 1] + row * info->size;
+                    void* ptr = chunk.data + arch->offsets[ci + 1] + row * info->size;
                     info->destruct(ptr);
                 }
             }

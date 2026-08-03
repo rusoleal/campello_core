@@ -34,3 +34,8 @@ add_executable(campello_core_tests ${TEST_SOURCES})
 target_link_libraries(campello_core_tests PRIVATE campello::core Catch2::Catch2WithMain)
 
 catch_discover_tests(campello_core_tests)
+
+# Long-running stress executable. Built with tests but not registered with CTest,
+# so the normal test suite stays fast.
+add_executable(campello_core_long_stress test_long_stress.cpp)
+target_link_libraries(campello_core_long_stress PRIVATE campello::core)

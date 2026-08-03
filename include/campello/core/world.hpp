@@ -14,7 +14,9 @@
 #include <cassert>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace campello::core {
@@ -78,6 +80,8 @@ public:
         // Register built-in hierarchy components
         register_component<Parent>();
         register_component<Children>();
+        parent_component_id_ = component_type_id<Parent>();
+        children_component_id_ = component_type_id<Children>();
     }
 
     ~World() { clear(); }
@@ -97,7 +101,71 @@ public:
     template<typename... Cs>
     Entity spawn_with(Cs&&... components) {
         Entity e = spawn();
-        (insert<std::remove_cv_t<std::remove_reference_t<Cs>>>(e, std::forward<Cs>(components)), ...);
+        if constexpr (sizeof...(Cs) == 0) {
+            return e;
+        }
+
+        (register_component<std::remove_cv_t<std::remove_reference_t<Cs>>>(), ...);
+
+        // Reuse a thread-local buffer so we don't allocate a temporary vector
+        // for every spawn_with call.
+        static thread_local std::vector<ComponentId> cids;
+        cids.clear();
+        (cids.push_back(component_type_id<std::remove_cv_t<std::remove_reference_t<Cs>>>()), ...);
+        std::sort(cids.begin(), cids.end());
+        cids.erase(std::unique(cids.begin(), cids.end()), cids.end());
+
+        ArchetypeId arch_id = archetype_storage_.find_or_create_archetype(cids);
+        archetype_version_++;
+
+        auto [chunk_idx, row] = archetype_storage_.allocate_entity(
+            e, arch_id, component_registry_, change_tick_, false);
+
+        std::uint32_t idx = entity_index(e);
+        if (idx >= entity_meta_.size()) {
+            entity_meta_.resize(idx + 1);
+        }
+        entity_meta_[idx] = {arch_id, chunk_idx, row};
+
+        Archetype* arch = archetype_storage_.get_archetype(arch_id);
+        if (arch) {
+            Tick tick = change_tick_;
+
+            // Construct each component in place and mark ticks.
+            auto construct_one = [&]<typename C>(C&& comp) {
+                using raw = std::remove_cv_t<std::remove_reference_t<C>>;
+                ComponentId cid = component_type_id<raw>();
+                std::size_t ci = arch->component_index(cid);
+                if (ci == static_cast<std::size_t>(-1)) return;
+
+                void* ptr = archetype_storage_.get_component(
+                    *arch, chunk_idx, row, ci, component_registry_);
+                new (ptr) raw(std::forward<C>(comp));
+
+                arch->chunk_ticks[chunk_idx].added[ci][row] = tick;
+                arch->chunk_ticks[chunk_idx].changed[ci][row] = tick;
+            };
+            (construct_one(std::forward<Cs>(components)), ...);
+
+            // Fire on_add hooks after all components are present.
+            auto hook_one = [&]<typename C>(const C&) {
+                using raw = std::remove_cv_t<std::remove_reference_t<C>>;
+                ComponentId cid = component_type_id<raw>();
+                std::size_t ci = arch->component_index(cid);
+                if (ci == static_cast<std::size_t>(-1)) return;
+
+                void* ptr = archetype_storage_.get_component(
+                    *arch, chunk_idx, row, ci, component_registry_);
+                auto it = on_add_hooks_.find(cid);
+                if (it != on_add_hooks_.end()) {
+                    for (auto& hook : it->second) {
+                        hook(e, ptr);
+                    }
+                }
+            };
+            (hook_one(components), ...);
+        }
+
         return e;
     }
 
@@ -109,32 +177,53 @@ public:
         std::sort(cids.begin(), cids.end());
         cids.erase(std::unique(cids.begin(), cids.end()), cids.end());
 
-        ArchetypeId arch = archetype_storage_.find_or_create_archetype(cids);
+        ArchetypeId arch_id = archetype_storage_.find_or_create_archetype(cids);
         archetype_version_++;
-        Archetype* arch_ptr = archetype_storage_.get_archetype(arch);
+        Archetype* arch_ptr = archetype_storage_.get_archetype(arch_id);
+        if (!arch_ptr || count == 0) return {};
 
         std::vector<Entity> entities;
         entities.reserve(count);
 
         Tick tick = change_tick_;
-        for (std::size_t i = 0; i < count; ++i) {
-            Entity e = entity_allocator_.spawn();
-            std::uint32_t idx = entity_index(e);
-            if (idx >= entity_meta_.size()) entity_meta_.resize(idx + 1);
+        std::size_t remaining = count;
 
-            auto [chunk_idx, row] = archetype_storage_.allocate_entity(e, arch, component_registry_, tick);
-            entity_meta_[idx] = {arch, chunk_idx, row};
+        while (remaining > 0) {
+            // Find or allocate a chunk with free space.
+            auto [chunk, ticks, chunk_idx] = archetype_storage_.ensure_chunk_with_space(
+                arch_id, component_registry_);
+            if (!chunk) break;
 
-            // Overwrite default-constructed components with provided values
+            std::uint32_t available = chunk->capacity - chunk->count;
+            std::uint32_t batch = static_cast<std::uint32_t>(std::min<std::size_t>(available, remaining));
+            std::uint32_t start_row = chunk->count;
+
+            // Write entity IDs and metadata.
+            Entity* entities_arr = reinterpret_cast<Entity*>(chunk->data + arch_ptr->offsets[0]);
+            for (std::uint32_t r = 0; r < batch; ++r) {
+                Entity e = entity_allocator_.spawn();
+                std::uint32_t idx = entity_index(e);
+                if (idx >= entity_meta_.size()) entity_meta_.resize(idx + 1);
+                entity_meta_[idx] = {arch_id, chunk_idx, start_row + r};
+                entities_arr[start_row + r] = e;
+                entities.push_back(e);
+            }
+
+            // Bulk fill component arrays and tick arrays.
             ([&]<typename C>(const C& comp) {
-                std::size_t ci = arch_ptr->component_index(component_type_id<std::remove_cv_t<C>>());
-                void* ptr = archetype_storage_.get_component(*arch_ptr, chunk_idx, row, ci, component_registry_);
-                const auto* info = component_registry_.info(component_type_id<std::remove_cv_t<C>>());
-                if (info && info->destruct) info->destruct(ptr);
-                new (ptr) std::remove_cv_t<C>(comp);
+                using raw = std::remove_cv_t<C>;
+                ComponentId cid = component_type_id<raw>();
+                std::size_t ci = arch_ptr->component_index(cid);
+                if (ci == static_cast<std::size_t>(-1)) return;
+                raw* arr = reinterpret_cast<raw*>(chunk->data + arch_ptr->offsets[ci + 1]);
+                std::uninitialized_fill_n(arr + start_row, batch, comp);
+                std::fill_n(ticks->added[ci].data() + start_row, batch, tick);
+                std::fill_n(ticks->changed[ci].data() + start_row, batch, tick);
             }(components), ...);
 
-            entities.push_back(e);
+            chunk->count += batch;
+            arch_ptr->entity_count += batch;
+            remaining -= batch;
         }
 
         return entities;
@@ -156,22 +245,55 @@ public:
     void despawn(Entity entity) {
         if (!is_alive(entity)) return;
 
+        std::uint32_t idx = entity_index(entity);
+        EntityMeta& meta = entity_meta_[idx];
+        Archetype* arch = (meta.archetype != 0)
+                              ? archetype_storage_.get_archetype(meta.archetype)
+                              : nullptr;
+
         // Cascade despawn children
-        if (auto* children = get<Children>(entity)) {
-            auto child_list = children->entities; // copy before mutation
-            for (Entity child : child_list) {
-                despawn(child);
+        if (arch) {
+            std::size_t ci = arch->component_index(children_component_id_);
+            if (ci != static_cast<std::size_t>(-1)) {
+                void* ptr = archetype_storage_.get_component(
+                    *arch, meta.chunk_index, meta.row_index, ci, component_registry_);
+                if (auto* children = static_cast<Children*>(ptr)) {
+                    auto child_list = children->entities; // copy before mutation
+                    for (Entity child : child_list) {
+                        despawn(child);
+                    }
+                }
             }
         }
 
         // Remove from parent's children list
-        if (auto* parent = get<Parent>(entity)) {
-            if (is_alive(parent->entity)) {
-                if (auto* parent_children = get<Children>(parent->entity)) {
-                    auto it = std::find(parent_children->entities.begin(),
-                                        parent_children->entities.end(), entity);
-                    if (it != parent_children->entities.end()) {
-                        parent_children->entities.erase(it);
+        if (arch) {
+            std::size_t ci = arch->component_index(parent_component_id_);
+            if (ci != static_cast<std::size_t>(-1)) {
+                void* ptr = archetype_storage_.get_component(
+                    *arch, meta.chunk_index, meta.row_index, ci, component_registry_);
+                if (auto* parent = static_cast<Parent*>(ptr)) {
+                    if (is_alive(parent->entity)) {
+                        std::uint32_t pidx = entity_index(parent->entity);
+                        const EntityMeta& pmeta = entity_meta_[pidx];
+                        if (pmeta.archetype != 0) {
+                            Archetype* parch = archetype_storage_.get_archetype(pmeta.archetype);
+                            if (parch) {
+                                std::size_t pci = parch->component_index(children_component_id_);
+                                if (pci != static_cast<std::size_t>(-1)) {
+                                    void* pptr = archetype_storage_.get_component(
+                                        *parch, pmeta.chunk_index, pmeta.row_index, pci,
+                                        component_registry_);
+                                    if (auto* parent_children = static_cast<Children*>(pptr)) {
+                                        auto it = std::find(parent_children->entities.begin(),
+                                                            parent_children->entities.end(), entity);
+                                        if (it != parent_children->entities.end()) {
+                                            parent_children->entities.erase(it);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -181,8 +303,6 @@ public:
         call_on_remove_hooks(entity);
 
         // Remove from archetype
-        std::uint32_t idx = entity_index(entity);
-        EntityMeta& meta = entity_meta_[idx];
         if (meta.archetype != 0) {
             Entity swapped = archetype_storage_.remove_entity(meta.archetype, meta.chunk_index,
                                                               meta.row_index, component_registry_);
@@ -229,18 +349,27 @@ public:
             }
         }
 
-        // Build new archetype component list
-        std::vector<ComponentId> new_components;
-        if (meta.archetype != 0) {
-            Archetype* arch = archetype_storage_.get_archetype(meta.archetype);
-            if (arch) new_components = arch->components;
+        // Resolve target archetype, using the source archetype's add-edge cache.
+        ArchetypeId new_arch = 0;
+        if (meta.archetype == 0) {
+            new_arch = archetype_storage_.find_or_create_archetype({cid});
+        } else {
+            ArchetypeId from_id = meta.archetype;
+            Archetype* arch = archetype_storage_.get_archetype(from_id);
+            if (arch) {
+                auto edge_it = arch->add_edges.find(cid);
+                if (edge_it != arch->add_edges.end()) {
+                    new_arch = edge_it->second;
+                } else {
+                    std::vector<ComponentId> new_components = arch->components;
+                    new_components.push_back(cid);
+                    std::sort(new_components.begin(), new_components.end());
+                    new_arch = archetype_storage_.find_or_create_archetype(new_components);
+                    // Re-fetch: find_or_create_archetype may have reallocated archetype storage.
+                    archetype_storage_.get_archetype(from_id)->add_edges[cid] = new_arch;
+                }
+            }
         }
-        new_components.push_back(cid);
-        std::sort(new_components.begin(), new_components.end());
-        new_components.erase(std::unique(new_components.begin(), new_components.end()),
-                             new_components.end());
-
-        ArchetypeId new_arch = archetype_storage_.find_or_create_archetype(new_components);
         archetype_version_++;
 
         if (meta.archetype == 0) {
@@ -316,28 +445,36 @@ public:
 
         record_component_removal(entity, cid);
 
-        std::vector<ComponentId> new_components = arch->components;
-        auto it = std::lower_bound(new_components.begin(), new_components.end(), cid);
-        if (it != new_components.end() && *it == cid) {
-            new_components.erase(it);
-        }
-
-        if (new_components.empty()) {
-            // No components left — remove from archetype entirely
-            Entity swapped = archetype_storage_.remove_entity(meta.archetype, meta.chunk_index,
-                                                              meta.row_index, component_registry_);
-            if (swapped != null_entity) {
-                std::uint32_t swapped_idx = entity_index(swapped);
-                entity_meta_[swapped_idx].chunk_index = meta.chunk_index;
-                entity_meta_[swapped_idx].row_index = meta.row_index;
+        // Resolve target archetype, using the source archetype's remove-edge cache.
+        ArchetypeId new_arch = 0;
+        ArchetypeId from_id = meta.archetype;
+        auto edge_it = arch->remove_edges.find(cid);
+        if (edge_it != arch->remove_edges.end()) {
+            new_arch = edge_it->second;
+        } else {
+            std::vector<ComponentId> new_components = arch->components;
+            auto comp_it = std::lower_bound(new_components.begin(), new_components.end(), cid);
+            if (comp_it != new_components.end() && *comp_it == cid) {
+                new_components.erase(comp_it);
             }
-            meta.archetype = 0;
-            meta.chunk_index = 0;
-            meta.row_index = 0;
-            return;
+            if (new_components.empty()) {
+                // No components left — remove from archetype entirely
+                Entity swapped = archetype_storage_.remove_entity(from_id, meta.chunk_index,
+                                                                  meta.row_index, component_registry_);
+                if (swapped != null_entity) {
+                    std::uint32_t swapped_idx = entity_index(swapped);
+                    entity_meta_[swapped_idx].chunk_index = meta.chunk_index;
+                    entity_meta_[swapped_idx].row_index = meta.row_index;
+                }
+                meta.archetype = 0;
+                meta.chunk_index = 0;
+                meta.row_index = 0;
+                return;
+            }
+            new_arch = archetype_storage_.find_or_create_archetype(new_components);
+            // Re-fetch: find_or_create_archetype may have reallocated archetype storage.
+            archetype_storage_.get_archetype(from_id)->remove_edges[cid] = new_arch;
         }
-
-        ArchetypeId new_arch = archetype_storage_.find_or_create_archetype(new_components);
         archetype_version_++;
 
         auto [new_chunk, new_row, swapped] = archetype_storage_.move_entity(
@@ -392,8 +529,60 @@ public:
 
     template<typename... Cs>
     Query<Cs...> query() {
-        auto q = Query<Cs...>(&archetype_storage_, &component_registry_, &archetype_version_);
+        (register_component<std::remove_cv_t<Cs>>(), ...);
+
+        std::vector<ComponentId> key = {component_type_id<std::remove_cv_t<Cs>>()...};
+        std::sort(key.begin(), key.end());
+        key.erase(std::unique(key.begin(), key.end()), key.end());
+
+        auto cache_it = query_cache_.find(key);
+        if (cache_it == query_cache_.end() || cache_it->second.second != archetype_version_) {
+            std::vector<ArchetypeId> matching;
+            if (!key.empty()) {
+                const std::vector<ArchetypeId>* candidate_set = nullptr;
+                std::size_t candidate_idx = 0;
+                for (std::size_t r = 0; r < key.size(); ++r) {
+                    const auto* set = archetype_storage_.archetypes_with_component(key[r]);
+                    if (!set) {
+                        candidate_set = nullptr;
+                        break;
+                    }
+                    if (!candidate_set || set->size() < candidate_set->size()) {
+                        candidate_set = set;
+                        candidate_idx = r;
+                    }
+                }
+                if (candidate_set) {
+                    if (key.size() == 1) {
+                        matching.assign(candidate_set->begin(), candidate_set->end());
+                    } else {
+                        matching.reserve(candidate_set->size());
+                        for (ArchetypeId id : *candidate_set) {
+                            Archetype* arch = archetype_storage_.get_archetype(id);
+                            if (!arch) continue;
+                            bool matches = true;
+                            for (std::size_t r = 0; r < key.size(); ++r) {
+                                if (r == candidate_idx) continue;
+                                if (!arch->has_component(key[r])) {
+                                    matches = false;
+                                    break;
+                                }
+                            }
+                            if (matches) {
+                                matching.push_back(id);
+                            }
+                        }
+                    }
+                }
+            }
+            query_cache_[key] = {std::move(matching), archetype_version_};
+            cache_it = query_cache_.find(key);
+        }
+
+        auto q = Query<Cs...>(&archetype_storage_, &component_registry_, &archetype_version_,
+                              &entity_meta_, &removed_components_);
         q.with_last_run_tick(change_tick_);
+        q.set_cached_archetypes(cache_it->second.first, archetype_version_);
         return q;
     }
 
@@ -414,9 +603,9 @@ public:
             return clone_e; // source has no components
         }
 
-        // Allocate clone directly into the source archetype
+        // Allocate clone directly into the source archetype (uninitialized components).
         auto [chunk_idx, row] = archetype_storage_.allocate_entity(
-            clone_e, src_meta.archetype, component_registry_, change_tick_);
+            clone_e, src_meta.archetype, component_registry_, change_tick_, false);
         entity_meta_[entity_index(clone_e)] = {src_meta.archetype, chunk_idx, row};
 
         // Copy components and collect hooks
@@ -431,9 +620,6 @@ public:
                 void* dst_ptr = archetype_storage_.get_component(
                     *arch, chunk_idx, row, i, component_registry_);
 
-                // allocate_entity default-constructed the component.
-                // Destruct it before copying the source value.
-                if (info && info->destruct) info->destruct(dst_ptr);
                 if (info && info->copy) info->copy(dst_ptr, src_ptr);
             }
 
@@ -475,32 +661,66 @@ public:
         Archetype* arch = archetype_storage_.get_archetype(src_meta.archetype);
         if (!arch) return clones;
 
-        // Batch allocate all clones into the same archetype
-        for (std::size_t i = 0; i < count; ++i) {
-            Entity clone_e = spawn();
-            auto [chunk_idx, row] = archetype_storage_.allocate_entity(
-                clone_e, src_meta.archetype, component_registry_, change_tick_);
-            entity_meta_[entity_index(clone_e)] = {src_meta.archetype, chunk_idx, row};
-            clones.push_back(clone_e);
-        }
+        Tick tick = change_tick_;
+        std::size_t remaining = count;
 
-        // Copy components for all clones
-        for (Entity clone_e : clones) {
-            std::uint32_t dst_idx = entity_index(clone_e);
-            const EntityMeta& dst_meta = entity_meta_[dst_idx];
+        while (remaining > 0) {
+            auto [chunk, ticks, chunk_idx] = archetype_storage_.ensure_chunk_with_space(
+                src_meta.archetype, component_registry_);
+            if (!chunk) break;
 
+            std::uint32_t available = chunk->capacity - chunk->count;
+            std::uint32_t batch = static_cast<std::uint32_t>(std::min<std::size_t>(available, remaining));
+            std::uint32_t start_row = chunk->count;
+
+            // Spawn entity IDs and write them into the contiguous entity array segment.
+            Entity* entities_arr = reinterpret_cast<Entity*>(chunk->data + arch->offsets[0]);
+            for (std::uint32_t r = 0; r < batch; ++r) {
+                Entity clone_e = spawn();
+                std::uint32_t idx = entity_index(clone_e);
+                if (idx >= entity_meta_.size()) entity_meta_.resize(idx + 1);
+                entity_meta_[idx] = {src_meta.archetype, chunk_idx, start_row + r};
+                entities_arr[start_row + r] = clone_e;
+                clones.push_back(clone_e);
+            }
+
+            // Bulk copy each component from the source entity into the batch row range.
             for (std::size_t i = 0; i < arch->components.size(); ++i) {
                 ComponentId cid = arch->components[i];
                 const auto* info = component_registry_.info(cid);
+                if (!info) continue;
 
                 void* src_ptr = archetype_storage_.get_component(
                     *arch, src_meta.chunk_index, src_meta.row_index, i, component_registry_);
-                void* dst_ptr = archetype_storage_.get_component(
-                    *arch, dst_meta.chunk_index, dst_meta.row_index, i, component_registry_);
+                std::byte* dst_base = chunk->data + arch->offsets[i + 1];
 
-                if (info && info->destruct) info->destruct(dst_ptr);
-                if (info && info->copy) info->copy(dst_ptr, src_ptr);
+                if (info->trivially_relocatable) {
+                    // Fast path: replicate the source value with log(N) memcpys.
+                    std::size_t size = info->size;
+                    std::memcpy(dst_base + start_row * size, src_ptr, size);
+                    std::uint32_t filled = 1;
+                    while (filled < batch) {
+                        std::uint32_t to_copy = std::min(filled, batch - filled);
+                        std::memcpy(dst_base + (start_row + filled) * size,
+                                    dst_base + start_row * size,
+                                    to_copy * size);
+                        filled += to_copy;
+                    }
+                } else if (info->copy) {
+                    // Non-trivial components: copy-construct row by row.
+                    for (std::uint32_t r = 0; r < batch; ++r) {
+                        void* dst_ptr = dst_base + (start_row + r) * info->size;
+                        info->copy(dst_ptr, src_ptr);
+                    }
+                }
+
+                std::fill_n(ticks->added[i].data() + start_row, batch, tick);
+                std::fill_n(ticks->changed[i].data() + start_row, batch, tick);
             }
+
+            chunk->count += batch;
+            arch->entity_count += batch;
+            remaining -= batch;
         }
 
         // Fire on_add hooks for all clones (after all components are copied)
@@ -597,13 +817,16 @@ public:
 
     template<component T>
     void register_component() {
+        ComponentId cid = component_type_id<T>();
+        if (component_registry_.contains(cid)) return;
+
         component_registry_.register_component<T>();
 
         ComponentBuilder builder(ComponentTraits<T>::name);
         builder.size(sizeof(T)).alignment(alignof(T))
                 .relocatable(ComponentTraits<T>::trivially_relocatable);
         ComponentTraits<T>::reflect(builder);
-        reflect_registry_.register_info(component_type_id<T>(), builder.build());
+        reflect_registry_.register_info(cid, builder.build());
     }
 
     const ComponentRegistry& components() const {
@@ -663,17 +886,38 @@ public:
     }
 
     void clear_removed() {
-        removed_components_.clear();
+        // Keep the map entries and their vector capacities alive: clearing the
+        // map would force reallocation on every tick, which shows up hot when
+        // many entities are despawned per frame.
+        for (auto& entry : removed_components_) {
+            entry.second.clear();
+        }
     }
 
     template<component T>
-    const std::vector<Entity>& removed() const {
+    std::vector<Entity> removed(Tick since = 0) const {
+        std::vector<Entity> out;
         auto it = removed_components_.find(component_type_id<T>());
+        if (it == removed_components_.end()) return out;
+        out.reserve(it->second.size());
+        for (const auto& [entity, tick] : it->second) {
+            if (tick > since) out.push_back(entity);
+        }
+        return out;
+    }
+
+    // Internal accessor used by Query's Removed<C> filter.
+    const std::vector<std::pair<Entity, Tick>>& removed_events(ComponentId cid) const {
+        auto it = removed_components_.find(cid);
         if (it == removed_components_.end()) {
-            static const std::vector<Entity> empty;
+            static const std::vector<std::pair<Entity, Tick>> empty;
             return empty;
         }
         return it->second;
+    }
+
+    const std::vector<EntityMeta>& entity_meta() const {
+        return entity_meta_;
     }
 
     // --- Snapshots ---
@@ -815,13 +1059,20 @@ private:
     std::uint64_t archetype_version_ = 0;
     Tick change_tick_ = 1;
 
+    // World-level query cache: maps sorted component-id set to matching archetypes.
+    // Invalidated when archetype_version_ changes.
+    std::map<std::vector<ComponentId>, std::pair<std::vector<ArchetypeId>, std::uint64_t>> query_cache_;
+
     using HookCallback = std::function<void(Entity, void*)>;
     std::unordered_map<ComponentId, std::vector<HookCallback>> on_add_hooks_;
     std::unordered_map<ComponentId, std::vector<HookCallback>> on_remove_hooks_;
-    std::unordered_map<ComponentId, std::vector<Entity>> removed_components_;
+    std::unordered_map<ComponentId, std::vector<std::pair<Entity, Tick>>> removed_components_;
+
+    ComponentId parent_component_id_ = 0;
+    ComponentId children_component_id_ = 0;
 
     void record_component_removal(Entity entity, ComponentId cid) {
-        removed_components_[cid].push_back(entity);
+        removed_components_[cid].push_back({entity, change_tick_});
     }
 
     void type_erased_insert(Entity entity, ComponentId cid, const void* data);

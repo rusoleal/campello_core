@@ -40,6 +40,38 @@ int main() {
         });
     }
 
+    // --- Bulk spawn ---
+    for (int n : {100, 1000, 10000}) {
+        b.run("spawn_many " + std::to_string(n) + " x 1 comp", [&]() {
+            World world;
+            auto entities = world.spawn_many<A>(n, A{0});
+            ankerl::nanobench::doNotOptimizeAway(entities.data());
+        });
+
+        b.run("spawn_many " + std::to_string(n) + " x 3 comp", [&]() {
+            World world;
+            auto entities = world.spawn_many<A, B, C>(n, A{0}, B{0}, C{0});
+            ankerl::nanobench::doNotOptimizeAway(entities.data());
+        });
+    }
+
+    // --- Bulk clone ---
+    for (int n : {100, 1000, 10000}) {
+        b.run("clone_many " + std::to_string(n) + " x 1 comp", [&]() {
+            World world;
+            Entity source = world.spawn_with(A{42});
+            auto clones = world.clone_many(source, n);
+            ankerl::nanobench::doNotOptimizeAway(clones.data());
+        });
+
+        b.run("clone_many " + std::to_string(n) + " x 3 comp", [&]() {
+            World world;
+            Entity source = world.spawn_with(A{42}, B{42}, C{42});
+            auto clones = world.clone_many(source, n);
+            ankerl::nanobench::doNotOptimizeAway(clones.data());
+        });
+    }
+
     // --- Despawn from middle ---
     for (int n : {100, 1000, 10000}) {
         b.run("despawn middle " + std::to_string(n), [&]() {

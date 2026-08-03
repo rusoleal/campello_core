@@ -8,6 +8,8 @@
 #include <future>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace campello::core {
@@ -20,6 +22,10 @@ struct Added {};
 
 template<component T>
 struct Changed {};
+
+// Removed components are tracked via a world-level event buffer.
+template<component T>
+struct Removed {};
 
 // Legacy filters (not yet implemented as runtime filters)
 template<component T>
@@ -61,8 +67,11 @@ class Query {
 public:
     using item_type = std::tuple<Cs&...>;
 
-    Query(ArchetypeStorage* storage, ComponentRegistry* registry, std::uint64_t* world_version)
-        : storage_(storage), registry_(registry), world_version_(world_version) {}
+    Query(ArchetypeStorage* storage, ComponentRegistry* registry, std::uint64_t* world_version,
+          const std::vector<EntityMeta>* entity_meta = nullptr,
+          const std::unordered_map<ComponentId, std::vector<std::pair<Entity, Tick>>>* removed_components = nullptr)
+        : storage_(storage), registry_(registry), world_version_(world_version),
+          entity_meta_(entity_meta), removed_components_(removed_components) {}
 
     // Pre-populate matching archetypes from a world-level cache.
     // `version` must be the current archetype_version_ of the world.
@@ -90,6 +99,12 @@ public:
         return *this;
     }
 
+    template<component T>
+    Query removed() {
+        filter_removed_.push_back(component_type_id<T>());
+        return *this;
+    }
+
     Query with_last_run_tick(Tick tick) {
         last_run_tick_ = tick;
         return *this;
@@ -101,7 +116,13 @@ public:
     template<typename Func>
     void each(Func&& func) {
         update_cache();
+        if (!filter_removed_.empty()) {
+            each_removed(std::forward<Func>(func));
+            return;
+        }
         ComponentId required[] = { detail::component_access<Cs>::id()... };
+        const bool has_filters = !filter_added_.empty() || !filter_changed_.empty();
+
         for (ArchetypeId arch_id : matching_archetypes_) {
             Archetype* arch = storage_->get_archetype(arch_id);
             if (!arch) continue;
@@ -114,9 +135,12 @@ public:
             for (std::size_t chunk_idx = 0; chunk_idx < arch->chunks.size(); ++chunk_idx) {
                 Chunk& chunk = arch->chunks[chunk_idx];
                 if (chunk.count == 0) continue;
+                std::byte* bases[sizeof...(Cs)] = {
+                    component_base<Cs>(*arch, chunk, comp_indices[index_of<Cs>()])...
+                };
                 for (std::uint32_t row = 0; row < chunk.count; ++row) {
-                    if (!passes_filters(*arch, static_cast<std::uint32_t>(chunk_idx), row)) continue;
-                    func(get_component_ref<Cs>(chunk, row, comp_indices[index_of<Cs>()])...);
+                    if (has_filters && !passes_filters(*arch, static_cast<std::uint32_t>(chunk_idx), row)) continue;
+                    func(deref_at<Cs>(bases[index_of<Cs>()], row)...);
                 }
             }
         }
@@ -126,7 +150,13 @@ public:
     template<typename Func>
     void each_with_entity(Func&& func) {
         update_cache();
+        if (!filter_removed_.empty()) {
+            each_with_entity_removed(std::forward<Func>(func));
+            return;
+        }
         ComponentId required[] = { detail::component_access<Cs>::id()... };
+        const bool has_filters = !filter_added_.empty() || !filter_changed_.empty();
+
         for (ArchetypeId arch_id : matching_archetypes_) {
             Archetype* arch = storage_->get_archetype(arch_id);
             if (!arch) continue;
@@ -139,10 +169,13 @@ public:
             for (std::size_t chunk_idx = 0; chunk_idx < arch->chunks.size(); ++chunk_idx) {
                 Chunk& chunk = arch->chunks[chunk_idx];
                 if (chunk.count == 0) continue;
-                Entity* entities = reinterpret_cast<Entity*>(chunk.data + chunk.offsets[0]);
+                Entity* entities = reinterpret_cast<Entity*>(chunk.data + arch->offsets[0]);
+                std::byte* bases[sizeof...(Cs)] = {
+                    component_base<Cs>(*arch, chunk, comp_indices[index_of<Cs>()])...
+                };
                 for (std::uint32_t row = 0; row < chunk.count; ++row) {
-                    if (!passes_filters(*arch, static_cast<std::uint32_t>(chunk_idx), row)) continue;
-                    func(entities[row], get_component_ref<Cs>(chunk, row, comp_indices[index_of<Cs>()])...);
+                    if (has_filters && !passes_filters(*arch, static_cast<std::uint32_t>(chunk_idx), row)) continue;
+                    func(entities[row], deref_at<Cs>(bases[index_of<Cs>()], row)...);
                 }
             }
         }
@@ -153,6 +186,13 @@ public:
     template<typename Func>
     void each_par(detail::ThreadPool& pool, Func&& func) {
         update_cache();
+        if (!filter_removed_.empty()) {
+            // Removed filters iterate a small per-frame event list; serial dispatch avoids
+            // synchronization complexity. The list is already small enough that parallel
+            // overhead is unlikely to help.
+            each_removed(std::forward<Func>(func));
+            return;
+        }
         ComponentId required[] = { detail::component_access<Cs>::id()... };
 
         struct ChunkTask {
@@ -189,9 +229,15 @@ public:
         std::vector<ComponentId> changed = filter_changed_;
         for (auto& task : tasks) {
             futures.push_back(pool.enqueue([this, &func, &task, last_run, added, changed]() {
-                for (std::uint32_t row = 0; row < task.chunk->count; ++row) {
-                    if (!this->passes_filters_task(*task.arch, task.chunk_idx, row, last_run, added, changed)) continue;
-                    func(this->get_component_ref<Cs>(*task.chunk, row, task.comp_indices[this->index_of<Cs>()])...);
+                Chunk& chunk = *task.chunk;
+                Archetype& arch = *task.arch;
+                std::byte* bases[sizeof...(Cs)] = {
+                    this->component_base<Cs>(arch, chunk, task.comp_indices[this->index_of<Cs>()])...
+                };
+                const bool has_filters = !added.empty() || !changed.empty();
+                for (std::uint32_t row = 0; row < chunk.count; ++row) {
+                    if (has_filters && !this->passes_filters_task(arch, task.chunk_idx, row, last_run, added, changed)) continue;
+                    func(this->deref_at<Cs>(bases[this->index_of<Cs>()], row)...);
                 }
             }));
         }
@@ -206,30 +252,57 @@ public:
         Iterator() = default;
         Iterator(ArchetypeStorage* storage, ComponentRegistry* registry,
                  const std::vector<ArchetypeId>* archetypes,
+                 const std::vector<EntityMeta>* entity_meta,
+                 const std::unordered_map<ComponentId, std::vector<std::pair<Entity, Tick>>>* removed_components,
+                 const std::vector<ComponentId>* filter_removed,
                  Tick last_run_tick,
                  const std::vector<ComponentId>* filter_added,
                  const std::vector<ComponentId>* filter_changed,
                  std::size_t arch_idx, std::uint32_t chunk_idx, std::uint32_t row)
             : storage_(storage), registry_(registry), archetypes_(archetypes),
+              entity_meta_(entity_meta), removed_components_(removed_components),
+              filter_removed_(filter_removed),
               last_run_tick_(last_run_tick),
               filter_added_(filter_added), filter_changed_(filter_changed),
               arch_idx_(arch_idx), chunk_idx_(chunk_idx), row_(row) {
-            advance_to_valid();
-            cache_indices();
+            if (filter_removed_ && !filter_removed_->empty()) {
+                removed_mode_ = true;
+                removed_idx_ = arch_idx;
+                find_primary_removed();
+                advance_to_valid_removed();
+            } else {
+                advance_to_valid();
+                cache_indices();
+            }
         }
 
         item_type operator*() {
+            if (removed_mode_) {
+                Archetype* arch = storage_->get_archetype(removed_meta_.archetype);
+                Chunk& chunk = arch->chunks[removed_meta_.chunk_index];
+                return std::tuple<Cs&...>(get_component_ref<Cs>(*arch, chunk, removed_meta_.row_index, removed_comp_indices_[index_of<Cs>()])...);
+            }
+            Archetype* arch = current_archetype();
             Chunk& chunk = current_chunk();
-            return std::tuple<Cs&...>(get_component_ref<Cs>(chunk, row_, comp_indices_[index_of<Cs>()])...);
+            return std::tuple<Cs&...>(get_component_ref<Cs>(*arch, chunk, row_, comp_indices_[index_of<Cs>()])...);
         }
 
         Iterator& operator++() {
+            if (removed_mode_) {
+                ++removed_idx_;
+                advance_to_valid_removed();
+                return *this;
+            }
             ++row_;
             advance_to_valid();
             return *this;
         }
 
         bool operator!=(const Iterator& other) const {
+            if (removed_mode_ != other.removed_mode_) return true;
+            if (removed_mode_) {
+                return removed_idx_ != other.removed_idx_;
+            }
             return arch_idx_ != other.arch_idx_ ||
                    chunk_idx_ != other.chunk_idx_ ||
                    row_ != other.row_;
@@ -242,22 +315,30 @@ public:
             return detail::type_index_impl<std::remove_cv_t<T>, std::remove_cv_t<Cs>...>::value;
         }
 
+        static bool passes_filters_at(ArchetypeStorage* storage, const Archetype& arch,
+                                       std::uint32_t chunk_idx, std::uint32_t row,
+                                       Tick last_run_tick,
+                                       const std::vector<ComponentId>& added,
+                                       const std::vector<ComponentId>& changed) {
+            for (ComponentId cid : added) {
+                std::size_t comp_idx = arch.component_index(cid);
+                if (comp_idx == static_cast<std::size_t>(-1)) return false;
+                Tick t = storage->get_added_tick(arch, chunk_idx, comp_idx, row);
+                if (t <= last_run_tick) return false;
+            }
+            for (ComponentId cid : changed) {
+                std::size_t comp_idx = arch.component_index(cid);
+                if (comp_idx == static_cast<std::size_t>(-1)) return false;
+                Tick t = storage->get_changed_tick(arch, chunk_idx, comp_idx, row);
+                if (t <= last_run_tick) return false;
+            }
+            return true;
+        }
+
         bool passes_filters_current() const {
             Archetype* arch = storage_->get_archetype((*archetypes_)[arch_idx_]);
             if (!arch) return false;
-            for (ComponentId cid : *filter_added_) {
-                std::size_t comp_idx = arch->component_index(cid);
-                if (comp_idx == static_cast<std::size_t>(-1)) return false;
-                Tick t = storage_->get_added_tick(*arch, chunk_idx_, comp_idx, row_);
-                if (t <= last_run_tick_) return false;
-            }
-            for (ComponentId cid : *filter_changed_) {
-                std::size_t comp_idx = arch->component_index(cid);
-                if (comp_idx == static_cast<std::size_t>(-1)) return false;
-                Tick t = storage_->get_changed_tick(*arch, chunk_idx_, comp_idx, row_);
-                if (t <= last_run_tick_) return false;
-            }
-            return true;
+            return passes_filters_at(storage_, *arch, chunk_idx_, row_, last_run_tick_, *filter_added_, *filter_changed_);
         }
 
         void advance_to_valid() {
@@ -294,14 +375,96 @@ public:
             }
         }
 
+        void find_primary_removed() {
+            primary_removed_ = nullptr;
+            primary_cid_ = 0;
+            if (!removed_components_ || !filter_removed_) return;
+            for (ComponentId cid : *filter_removed_) {
+                auto it = removed_components_->find(cid);
+                if (it == removed_components_->end() || it->second.empty()) return;
+                if (!primary_removed_ || it->second.size() < primary_removed_->size()) {
+                    primary_removed_ = &it->second;
+                    primary_cid_ = cid;
+                }
+            }
+        }
+
+        bool resolve_removed_entity(Entity entity) {
+            if (!entity_meta_ || !storage_) return false;
+            std::uint32_t idx = entity_index(entity);
+            if (idx >= entity_meta_->size()) return false;
+            const EntityMeta& meta = (*entity_meta_)[idx];
+            if (meta.archetype == 0) return false;
+            Archetype* arch = storage_->get_archetype(meta.archetype);
+            if (!arch) return false;
+            if (meta.chunk_index >= arch->chunks.size()) return false;
+            Chunk& chunk = arch->chunks[meta.chunk_index];
+            if (meta.row_index >= chunk.count) return false;
+            Entity* entities = reinterpret_cast<Entity*>(chunk.data + arch->offsets[0]);
+            if (entities[meta.row_index] != entity) return false;
+
+            ComponentId required[] = { detail::component_access<Cs>::id()... };
+            for (std::size_t i = 0; i < sizeof...(Cs); ++i) {
+                removed_comp_indices_[i] = arch->component_index(required[i]);
+                if (removed_comp_indices_[i] == static_cast<std::size_t>(-1)) return false;
+            }
+            removed_meta_ = meta;
+            return true;
+        }
+
+        bool passes_removed_filters_current(Entity entity) const {
+            if (!removed_components_) return false;
+            for (ComponentId cid : *filter_removed_) {
+                if (cid == primary_cid_) continue;
+                auto it = removed_components_->find(cid);
+                if (it == removed_components_->end()) return false;
+                bool found = false;
+                for (const auto& [e, t] : it->second) {
+                    if (e == entity && t > last_run_tick_) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return false;
+            }
+            return true;
+        }
+
+        void advance_to_valid_removed() {
+            if (!primary_removed_) {
+                removed_idx_ = 0;
+                return;
+            }
+            while (removed_idx_ < primary_removed_->size()) {
+                const auto& [entity, tick] = (*primary_removed_)[removed_idx_];
+                if (tick > last_run_tick_ &&
+                    resolve_removed_entity(entity) &&
+                    passes_removed_filters_current(entity)) {
+                    Archetype* arch = storage_->get_archetype(removed_meta_.archetype);
+                    if (passes_filters_at(storage_, *arch, removed_meta_.chunk_index, removed_meta_.row_index,
+                                          last_run_tick_, *filter_added_, *filter_changed_)) {
+                        return;
+                    }
+                }
+                ++removed_idx_;
+            }
+        }
+
+        Archetype* current_archetype() {
+            return storage_->get_archetype((*archetypes_)[arch_idx_]);
+        }
+
         Chunk& current_chunk() {
-            Archetype* arch = storage_->get_archetype((*archetypes_)[arch_idx_]);
+            Archetype* arch = current_archetype();
             return arch->chunks[chunk_idx_];
         }
 
         ArchetypeStorage* storage_ = nullptr;
         ComponentRegistry* registry_ = nullptr;
         const std::vector<ArchetypeId>* archetypes_ = nullptr;
+        const std::vector<EntityMeta>* entity_meta_ = nullptr;
+        const std::unordered_map<ComponentId, std::vector<std::pair<Entity, Tick>>>* removed_components_ = nullptr;
+        const std::vector<ComponentId>* filter_removed_ = nullptr;
         Tick last_run_tick_ = 0;
         const std::vector<ComponentId>* filter_added_ = nullptr;
         const std::vector<ComponentId>* filter_changed_ = nullptr;
@@ -309,24 +472,42 @@ public:
         std::uint32_t chunk_idx_ = 0;
         std::uint32_t row_ = 0;
         std::size_t comp_indices_[sizeof...(Cs)] = {};
+
+        bool removed_mode_ = false;
+        std::size_t removed_idx_ = 0;
+        const std::vector<std::pair<Entity, Tick>>* primary_removed_ = nullptr;
+        ComponentId primary_cid_ = 0;
+        EntityMeta removed_meta_;
+        std::size_t removed_comp_indices_[sizeof...(Cs)] = {};
     };
 
     Iterator begin() {
         update_cache();
         return Iterator(storage_, registry_, &matching_archetypes_,
+                        entity_meta_, removed_components_, &filter_removed_,
                         last_run_tick_, &filter_added_, &filter_changed_,
                         0, 0, 0);
     }
 
     Iterator end() {
         update_cache();
+        std::size_t end_idx = matching_archetypes_.size();
+        if (!filter_removed_.empty() && removed_components_) {
+            ComponentId primary_cid = 0;
+            const auto* primary = primary_removed_list(primary_cid);
+            if (primary) end_idx = primary->size();
+        }
         return Iterator(storage_, registry_, &matching_archetypes_,
+                        entity_meta_, removed_components_, &filter_removed_,
                         last_run_tick_, &filter_added_, &filter_changed_,
-                        matching_archetypes_.size(), 0, 0);
+                        end_idx, 0, 0);
     }
 
     std::size_t count() const {
         update_cache();
+        if (!filter_removed_.empty()) {
+            return count_removed();
+        }
         std::size_t total = 0;
         for (ArchetypeId id : matching_archetypes_) {
             Archetype* arch = storage_->get_archetype(id);
@@ -352,11 +533,19 @@ private:
     }
 
     template<typename C>
-    static decltype(auto) get_component_ref(Chunk& chunk, std::uint32_t row, std::size_t comp_idx) {
+    static std::byte* component_base(Archetype& arch, Chunk& chunk, std::size_t comp_idx) {
+        return chunk.data + arch.offsets[comp_idx + 1];
+    }
+
+    template<typename C>
+    static decltype(auto) deref_at(std::byte* base, std::uint32_t row) {
         using raw = typename detail::component_access<C>::raw_type;
-        void* ptr = chunk.data + chunk.offsets[comp_idx + 1];
-        // We need to know the component size. Use sizeof(raw) as fallback.
-        return reference_helper<C>(static_cast<std::byte*>(ptr) + row * sizeof(raw));
+        return reference_helper<C>(base + row * sizeof(raw));
+    }
+
+    template<typename C>
+    static decltype(auto) get_component_ref(Archetype& arch, Chunk& chunk, std::uint32_t row, std::size_t comp_idx) {
+        return deref_at<C>(component_base<C>(arch, chunk, comp_idx), row);
     }
 
     template<typename C>
@@ -402,6 +591,142 @@ private:
             if (t <= last_run_tick) return false;
         }
         return true;
+    }
+
+    // --- Removed-component filter implementation ---
+
+    bool is_alive_entity(Entity e) const {
+        if (!entity_meta_ || !storage_) return false;
+        std::uint32_t idx = entity_index(e);
+        if (idx >= entity_meta_->size()) return false;
+        const EntityMeta& meta = (*entity_meta_)[idx];
+        if (meta.archetype == 0) return false;
+        Archetype* arch = storage_->get_archetype(meta.archetype);
+        if (!arch) return false;
+        if (meta.chunk_index >= arch->chunks.size()) return false;
+        Chunk& chunk = arch->chunks[meta.chunk_index];
+        if (meta.row_index >= chunk.count) return false;
+        Entity* entities = reinterpret_cast<Entity*>(chunk.data + arch->offsets[0]);
+        return entities[meta.row_index] == e;
+    }
+
+    const std::vector<std::pair<Entity, Tick>>* primary_removed_list(ComponentId& out_cid) const {
+        const std::vector<std::pair<Entity, Tick>>* primary = nullptr;
+        out_cid = 0;
+        if (!removed_components_) return nullptr;
+        for (ComponentId cid : filter_removed_) {
+            auto it = removed_components_->find(cid);
+            if (it == removed_components_->end() || it->second.empty()) return nullptr;
+            if (!primary || it->second.size() < primary->size()) {
+                primary = &it->second;
+                out_cid = cid;
+            }
+        }
+        return primary;
+    }
+
+    bool passes_removed_filters(Entity entity, ComponentId primary_cid) const {
+        if (!removed_components_) return false;
+        for (ComponentId cid : filter_removed_) {
+            if (cid == primary_cid) continue;
+            auto it = removed_components_->find(cid);
+            if (it == removed_components_->end()) return false;
+            bool found = false;
+            for (const auto& [e, t] : it->second) {
+                if (e == entity && t > last_run_tick_) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    bool resolve_entity_components(Entity entity, EntityMeta& out_meta, std::size_t* comp_indices) const {
+        if (!entity_meta_ || !storage_) return false;
+        std::uint32_t idx = entity_index(entity);
+        if (idx >= entity_meta_->size()) return false;
+        const EntityMeta& meta = (*entity_meta_)[idx];
+        if (meta.archetype == 0) return false;
+        Archetype* arch = storage_->get_archetype(meta.archetype);
+        if (!arch) return false;
+        if (meta.chunk_index >= arch->chunks.size()) return false;
+        Chunk& chunk = arch->chunks[meta.chunk_index];
+        if (meta.row_index >= chunk.count) return false;
+        Entity* entities = reinterpret_cast<Entity*>(chunk.data + arch->offsets[0]);
+        if (entities[meta.row_index] != entity) return false;
+
+        ComponentId required[] = { detail::component_access<Cs>::id()... };
+        for (std::size_t i = 0; i < sizeof...(Cs); ++i) {
+            comp_indices[i] = arch->component_index(required[i]);
+            if (comp_indices[i] == static_cast<std::size_t>(-1)) return false;
+        }
+        out_meta = meta;
+        return true;
+    }
+
+    template<typename Func>
+    void each_removed(Func&& func) const {
+        ComponentId primary_cid = 0;
+        const auto* primary = primary_removed_list(primary_cid);
+        if (!primary) return;
+
+        std::size_t comp_indices[sizeof...(Cs)];
+        for (const auto& [entity, tick] : *primary) {
+            if (tick <= last_run_tick_) continue;
+            EntityMeta meta;
+            if (!resolve_entity_components(entity, meta, comp_indices)) continue;
+            if (!passes_removed_filters(entity, primary_cid)) continue;
+            Archetype* arch = storage_->get_archetype(meta.archetype);
+            Chunk& chunk = arch->chunks[meta.chunk_index];
+            if (!passes_filters(*arch, meta.chunk_index, meta.row_index)) continue;
+            std::byte* bases[sizeof...(Cs)] = {
+                component_base<Cs>(*arch, chunk, comp_indices[index_of<Cs>()])...
+            };
+            func(deref_at<Cs>(bases[index_of<Cs>()], meta.row_index)...);
+        }
+    }
+
+    template<typename Func>
+    void each_with_entity_removed(Func&& func) const {
+        ComponentId primary_cid = 0;
+        const auto* primary = primary_removed_list(primary_cid);
+        if (!primary) return;
+
+        std::size_t comp_indices[sizeof...(Cs)];
+        for (const auto& [entity, tick] : *primary) {
+            if (tick <= last_run_tick_) continue;
+            EntityMeta meta;
+            if (!resolve_entity_components(entity, meta, comp_indices)) continue;
+            if (!passes_removed_filters(entity, primary_cid)) continue;
+            Archetype* arch = storage_->get_archetype(meta.archetype);
+            Chunk& chunk = arch->chunks[meta.chunk_index];
+            if (!passes_filters(*arch, meta.chunk_index, meta.row_index)) continue;
+            std::byte* bases[sizeof...(Cs)] = {
+                component_base<Cs>(*arch, chunk, comp_indices[index_of<Cs>()])...
+            };
+            func(entity, deref_at<Cs>(bases[index_of<Cs>()], meta.row_index)...);
+        }
+    }
+
+    std::size_t count_removed() const {
+        ComponentId primary_cid = 0;
+        const auto* primary = primary_removed_list(primary_cid);
+        if (!primary) return 0;
+
+        std::size_t total = 0;
+        std::size_t comp_indices[sizeof...(Cs)];
+        for (const auto& [entity, tick] : *primary) {
+            if (tick <= last_run_tick_) continue;
+            EntityMeta meta;
+            if (!resolve_entity_components(entity, meta, comp_indices)) continue;
+            if (!passes_removed_filters(entity, primary_cid)) continue;
+            Archetype* arch = storage_->get_archetype(meta.archetype);
+            if (!passes_filters(*arch, meta.chunk_index, meta.row_index)) continue;
+            ++total;
+        }
+        return total;
     }
 
 public:
@@ -460,12 +785,15 @@ public:
     ArchetypeStorage* storage_ = nullptr;
     ComponentRegistry* registry_ = nullptr;
     std::uint64_t* world_version_ = nullptr;
+    const std::vector<EntityMeta>* entity_meta_ = nullptr;
+    const std::unordered_map<ComponentId, std::vector<std::pair<Entity, Tick>>>* removed_components_ = nullptr;
     mutable std::uint64_t cached_version_ = std::numeric_limits<std::uint64_t>::max();
     mutable std::vector<ArchetypeId> matching_archetypes_;
 
     Tick last_run_tick_ = 0;
     std::vector<ComponentId> filter_added_;
     std::vector<ComponentId> filter_changed_;
+    std::vector<ComponentId> filter_removed_;
 };
 
 } // namespace campello::core

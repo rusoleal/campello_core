@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Long-running stress executable `campello_core_long_stress` (`tests/test_long_stress.cpp`)
+  - Configurable duration via `--minutes N` and reproducible seeds via `--seed S`
+  - Mixed workload: spawn, mutate, despawn, schedule execution, queries, events, resources
+  - Per-phase invariant checks against an external oracle
+- Prefab/clone example `examples/ex_11_prefab.cpp` demonstrating `World::clone()` and `World::clone_many()`
+
+### Fixed
+- Changed `null_entity` from `0` to `std::numeric_limits<Entity>::max()` to prevent collision with the first spawned entity. This fixes a critical swap-back metadata corruption bug: when entity 0 (value `0`) was swapped during archetype moves, the caller treated it as `null_entity` and skipped updating its `entity_meta_`, leading to stale component pointers.
+
 ## [0.1.0] - 2026-04-24
 
 ### Added

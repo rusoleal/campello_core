@@ -293,7 +293,7 @@ struct DamageEvent { Entity target; int amount; };
 world.send(DamageEvent{e, 10});
 ```
 
-Events are stored in a `vector<EventStorage>` ring buffer (one per event type). `world.read_events<DamageEvent>()` returns a span of unprocessed events. `world.clear_events<DamageEvent>()` empties the buffer.
+Events are stored in a `vector<EventStorage>` ring buffer (one per event type). `world.event_reader<DamageEvent>()` returns an iterable `EventReader<DamageEvent>` over unprocessed events. `world.clear_events()` empties all event buffers.
 
 ### Resources
 

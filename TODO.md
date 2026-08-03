@@ -65,16 +65,18 @@ This document tracks the phases and tasks required to move the library from its 
   - [x] Sequential vs parallel dispatch (3 systems)
   - [x] System count scaling (5, 10, 20, 50 systems)
 
-### Benchmark findings (Apple M3, macOS, Release-like build)
+### Benchmark findings (Intel Core i5-8500B @ 3.0 GHz, x86_64, macOS, Release-like build)
+
+*Historical baseline numbers captured before the recent optimization pass. Current numbers are in `docs/PERFORMANCE.md`.*
 
 | Benchmark | Result | Assessment |
 |---|---|---|
-| Iteration (100k entities) | AoS 1.06M/s, SoA 698k/s, ECS `each()` 569k/s | **~1.9× AoS**, acceptable for archetype ECS |
-| Iteration (range-for) | 101k/s | **~10× slower than `each()`** — iterator overhead is significant |
-| Query match (500 archetypes) | 2.2k entities/s | **Linear scaling** — no query cache. Major bottleneck. |
-| Query components (8 comps) | 755 entities/s | Fetching many components has overhead |
-| Spawn 10k × 3 comp | 13 ops/s (75ms) | Acceptable for setup, not for per-frame spawning |
-| Schedule 50 systems | 216 frames/s | Linear scaling, overhead is manageable |
+| Iteration (100k entities) | AoS 596M/s, SoA 685M/s, ECS `each()` 184M/s | **~3.7× slower than SoA** before pointer hoisting / chunk-size tuning |
+| Iteration (range-for) | 79M/s | **~2.3× slower than `each()`** before iterator improvements |
+| Query match (500 archetypes) | 320M entities/s | **Linear scaling** — no world-level query cache yet |
+| Query components (8 comps) | 243M entities/s | Fetching many components has overhead |
+| Spawn 10k × 3 comp | 972k entities/s (~10.3 ms) | Looped `spawn_with`; `spawn_many` bulk path pending |
+| Schedule 50 systems | 518 frames/s | Linear scaling, overhead is manageable |
 | Schedule parallel vs sequential | Nearly identical | `std::async` overhead cancels parallel gains at small scale |
 
 **Key takeaway:** The biggest optimization opportunity is **query archetype caching**. Currently `query<T>()` re-matches all archetypes every time it's constructed. Adding a query cache (invalidated on `archetype_version_` change) would eliminate the linear archetype scan.
@@ -161,6 +163,7 @@ This document tracks the phases and tasks required to move the library from its 
 - [x] **Change detection**
   - [x] `Changed<C>` query filter — `query<...>().changed<C>().with_last_run_tick(t)`
   - [x] `Added<C>` query filter — `query<...>().added<C>().with_last_run_tick(t)`
+  - [x] `Removed<C>` query filter — `query<...>().removed<C>().with_last_run_tick(t)`
   - [x] `Removed<C>` tracking — `world.removed<C>()` returns entities that lost C since last tick clear
 
 - [x] **System dependencies**
@@ -190,7 +193,8 @@ This document tracks the phases and tasks required to move the library from its 
 - Change detection stores per-component `added_tick` and `changed_tick` arrays parallel to chunk data.
 - `world.increment_change_tick()` advances the global frame tick; queries compare component ticks against `last_run_tick`.
 - `world.mark_changed<T>(entity)` allows manual change tracking for mutations via `get<T>`.
-- Filter methods (`added()`, `changed()`, `with_last_run_tick()`) return by value to ensure safe range-for lifetime.
+- Filter methods (`added()`, `changed()`, `removed()`, `with_last_run_tick()`) return by value to ensure safe range-for lifetime.
+- `removed<C>()` filter iterates a world-level removal event buffer and verifies the entity is still alive and matches the query's required components.
 
 ---
 
@@ -240,9 +244,12 @@ This document tracks the phases and tasks required to move the library from its 
   - [ ] Use Tracy / Optick / Xcode Instruments for deeper profiling
 
 - [x] **Stability run**
-  - [x] ASan clean (121 tests, 42115 assertions)
+  - [x] ASan clean (123 tests, ~42k assertions)
   - [x] Release clean (5 consecutive runs)
-  - [ ] 1-hour continuous stress loop
+  - [x] 1-hour continuous stress loop
+    - [x] `tests/test_long_stress.cpp` — configurable duration (`--minutes N`), mixed ECS workload
+    - [x] Per-phase invariant checks (spawn, mutate, despawn, schedule)
+    - [x] 5-minute sanity run passed (14,802 iterations, ~5,000 alive entities)
 
 ---
 
@@ -316,16 +323,23 @@ The library can be called production-ready when:
 | Prefabs / entity cloning (`clone`, `clone_many`) | `world.hpp` |
 | 14 prefab tests (basic clone, independence, hooks, bulk, multi-chunk) | `test_prefab.cpp` |
 
+### Phase 7 — Real-World Validation & Bugfixes
+
+| Deliverable | Files |
+|---|---|
+| 1-hour continuous stress loop executable | `tests/test_long_stress.cpp` |
+| `null_entity` sentinel fix (collision with first spawned entity) | `include/campello/core/types.hpp`, `tests/test_types.cpp` |
+
 ## Current Blockers
 
 | Issue | Phase | Severity |
 |---|---|---|
 | ~~Query archetype caching~~ | 5 | ✅ Done — per-component index + smart `update_cache()` |
-| No `Removed<C>` filter (requires removal event buffer) | 5 | 🟢 Low |
+| ~~No `Removed<C>` filter (requires removal event buffer)~~ | 5 | ✅ Done |
 | No generic relations beyond Parent/Child | 5 | 🟢 Low |
 | ~~No world snapshots / serialization of full ECS state~~ | 5 | ✅ Done |
-| Missing prefab example | 6 | 🟢 Low |
+| ~~Missing prefab example~~ | 6 | ✅ Done — `examples/ex_11_prefab.cpp` |
 
 ---
 
-*Last updated: 2026-04-24*
+*Last updated: 2026-08-03*

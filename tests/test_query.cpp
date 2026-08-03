@@ -368,3 +368,123 @@ TEST_CASE("Query change detection with archetype moves") {
         });
     REQUIRE(vel_added == 1);
 }
+
+TEST_CASE("Query Removed filter matches removed components") {
+    World world;
+
+    Entity e1 = world.spawn_with(Position{1.0f, 0.0f, 0.0f}, Velocity{0.1f, 0.0f, 0.0f});
+    Entity e2 = world.spawn_with(Position{2.0f, 0.0f, 0.0f}, Velocity{0.2f, 0.0f, 0.0f});
+    Entity e3 = world.spawn_with(Position{3.0f, 0.0f, 0.0f}); // no Velocity
+
+    world.increment_change_tick(); // tick 2
+    world.remove<Velocity>(e1);
+
+    int count = 0;
+    world.query<Position>().removed<Velocity>().with_last_run_tick(1).each([&](Position& pos) {
+        REQUIRE(pos.x == 1.0f);
+        ++count;
+    });
+    REQUIRE(count == 1);
+
+    // Entity without Velocity originally should not appear.
+    REQUIRE(world.query<Position>().removed<Velocity>().with_last_run_tick(1).count() == 1);
+}
+
+TEST_CASE("Query Removed filter with each_with_entity") {
+    World world;
+
+    Entity e = world.spawn_with(Position{1.0f, 0.0f, 0.0f}, Velocity{0.1f, 0.0f, 0.0f});
+    world.increment_change_tick(); // tick 2
+    world.remove<Velocity>(e);
+
+    Entity found = null_entity;
+    world.query<Position>().removed<Velocity>().with_last_run_tick(1).each_with_entity(
+        [&](Entity entity, Position&) {
+            found = entity;
+        });
+    REQUIRE(found == e);
+}
+
+TEST_CASE("Query Removed filter with range-based for") {
+    World world;
+
+    Entity e = world.spawn_with(Position{1.0f, 0.0f, 0.0f}, Velocity{0.1f, 0.0f, 0.0f});
+    world.increment_change_tick(); // tick 2
+    world.remove<Velocity>(e);
+
+    int count = 0;
+    auto q = world.query<Position>().removed<Velocity>().with_last_run_tick(1);
+    for (auto [pos] : q) {
+        (void)pos;
+        ++count;
+    }
+    REQUIRE(count == 1);
+}
+
+TEST_CASE("Query Removed filter cleared on increment_change_tick") {
+    World world;
+
+    Entity e = world.spawn_with(Position{1.0f, 0.0f, 0.0f}, Velocity{0.1f, 0.0f, 0.0f});
+    world.increment_change_tick(); // tick 2
+    world.remove<Velocity>(e);
+
+    REQUIRE(world.query<Position>().removed<Velocity>().with_last_run_tick(1).count() == 1);
+
+    world.increment_change_tick(); // tick 3, clears removed buffer
+
+    REQUIRE(world.query<Position>().removed<Velocity>().with_last_run_tick(2).count() == 0);
+}
+
+TEST_CASE("Query Removed filter combined with Added filter") {
+    World world;
+
+    Entity e = world.spawn_with(Position{1.0f, 0.0f, 0.0f}, Velocity{0.1f, 0.0f, 0.0f});
+    world.increment_change_tick(); // tick 2
+    world.remove<Velocity>(e);
+    world.insert<Health>(e, 100);
+
+    int count = 0;
+    world.query<Position, Health>()
+        .removed<Velocity>()
+        .added<Health>()
+        .with_last_run_tick(1)
+        .each([&](Position&, Health& h) {
+            REQUIRE(h.value == 100);
+            ++count;
+        });
+    REQUIRE(count == 1);
+}
+
+TEST_CASE("Query Removed filter with multiple removed components") {
+    World world;
+
+    Entity e1 = world.spawn_with(Position{}, Velocity{}, Health{});
+    Entity e2 = world.spawn_with(Position{}, Velocity{}, Health{});
+
+    world.increment_change_tick(); // tick 2
+    world.remove<Velocity>(e1);
+    world.remove<Health>(e1);
+    world.remove<Velocity>(e2); // only Velocity removed
+
+    int count = 0;
+    world.query<Position>()
+        .removed<Velocity>()
+        .removed<Health>()
+        .with_last_run_tick(1)
+        .each_with_entity([&](Entity entity, Position&) {
+            REQUIRE(entity == e1);
+            ++count;
+        });
+    REQUIRE(count == 1);
+}
+
+TEST_CASE("Query Removed filter excludes despawned entities") {
+    World world;
+
+    Entity e = world.spawn_with(Position{1.0f, 0.0f, 0.0f}, Velocity{0.1f, 0.0f, 0.0f});
+    world.increment_change_tick(); // tick 2
+    world.remove<Velocity>(e);
+    world.despawn(e);
+
+    REQUIRE(world.query<Position>().removed<Velocity>().with_last_run_tick(1).count() == 0);
+}

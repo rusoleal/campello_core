@@ -61,7 +61,7 @@ int main() {
         world.remove<Health>(e);
     }
 
-    auto& removed = world.removed<Health>();
+    auto removed = world.removed<Health>();
     std::cout << "Frame 4: removed Health on " << removed.size() << " entities this tick\n";
 
     return 0;

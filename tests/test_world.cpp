@@ -205,7 +205,7 @@ TEST_CASE("World removed tracks single component removal") {
     Entity e = world.spawn_with(Position{1.0f, 0.0f, 0.0f});
     world.remove<Position>(e);
 
-    auto& removed = world.removed<Position>();
+    auto removed = world.removed<Position>();
     REQUIRE(removed.size() == 1);
     REQUIRE(removed[0] == e);
 }
@@ -215,8 +215,8 @@ TEST_CASE("World removed tracks despawned entity components") {
     Entity e = world.spawn_with(Position{1.0f, 0.0f, 0.0f}, Velocity{0.1f, 0.0f, 0.0f});
     world.despawn(e);
 
-    auto& removed_pos = world.removed<Position>();
-    auto& removed_vel = world.removed<Velocity>();
+    auto removed_pos = world.removed<Position>();
+    auto removed_vel = world.removed<Velocity>();
 
     REQUIRE(removed_pos.size() == 1);
     REQUIRE(removed_vel.size() == 1);
