@@ -373,8 +373,8 @@ TEST_CASE("Query Removed filter matches removed components") {
     World world;
 
     Entity e1 = world.spawn_with(Position{1.0f, 0.0f, 0.0f}, Velocity{0.1f, 0.0f, 0.0f});
-    Entity e2 = world.spawn_with(Position{2.0f, 0.0f, 0.0f}, Velocity{0.2f, 0.0f, 0.0f});
-    Entity e3 = world.spawn_with(Position{3.0f, 0.0f, 0.0f}); // no Velocity
+    world.spawn_with(Position{2.0f, 0.0f, 0.0f}, Velocity{0.2f, 0.0f, 0.0f}); // Velocity not removed, should not appear
+    world.spawn_with(Position{3.0f, 0.0f, 0.0f}); // no Velocity, should not appear
 
     world.increment_change_tick(); // tick 2
     world.remove<Velocity>(e1);
