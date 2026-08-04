@@ -141,10 +141,16 @@ struct MemoryStats {
 
 | Method | Signature | Description |
 |---|---|---|
-| `add_system` | `void add_system(Func, SystemDescriptor)` | Register system |
-| `add_system` | `void add_system(Func, string name)` | Register named system |
-| `run` | `void run(World&)` | Execute all stages sequentially |
-| `run_parallel` | `void run_parallel(World&, ThreadPool&)` | Execute with thread pool |
+| (constructor) | `Schedule(size_t num_threads = hardware_concurrency())` | Owns a new pool with this many threads; `0` forces fully sequential execution |
+| (constructor) | `explicit Schedule(ThreadPool&)` | Uses an externally-owned pool instead — share one pool across multiple `Schedule` instances and `each_par()` calls rather than each spinning up its own threads. Caller keeps the pool alive. |
+| `add_system` | `SystemDescriptor& add_system(Func)` | Register system, returns descriptor for chaining |
+| `add_system` | `SystemDescriptor& add_system(Func, string name)` | Register named system |
+| `add_system` | `SystemDescriptor& add_system(Func, SystemDescriptor)` | Register system with a pre-built descriptor |
+| `run` | `void run(World&)` | Execute all stages, dispatching independent batches to the pool when it's worth it (see below) |
+| `system_count` | `size_t system_count() const` | Number of registered systems |
+| `set_min_parallel_duration` / `min_parallel_duration` | `void set_min_parallel_duration(chrono::nanoseconds)` / `chrono::nanoseconds min_parallel_duration() const` | Minimum summed last-measured cost a batch needs before it's dispatched to the pool instead of run inline (default 20us) |
+
+`run()` tracks each system's actual duration from its previous run and only dispatches an independent batch to the pool once its summed cost clears `min_parallel_duration()` — a system is assumed cheap until measured once, so the first `run()` call is always inline regardless of thread availability.
 
 ### SystemDescriptor
 

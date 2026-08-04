@@ -30,9 +30,25 @@ Measured on Intel Core i5-8500B @ 3.0 GHz (x86_64), AppleClang 17, macOS, Releas
 | `spawn_many` 10k × 3 comp | ~9.60M entities/s | Bulk path, ~1.0 ms per 10k |
 | `clone_many` 10k × 3 comp | ~6.75M entities/s | Bulk clone path, ~1.5 ms per 10k |
 | `clone_many` 10k × 1 comp | ~18.1M entities/s | Bulk clone path, ~0.55 ms per 10k |
-| Schedule 50 systems (10k) | ~14,347 frames/s | 50 independent systems, one frame |
+| Schedule 50 systems, same component (10k) | ~5,669 frames/s | All 50 write the same component, so the conflict DAG fully serializes them — this measures dependency-tracking overhead, not parallel throughput |
 
 **Note on units:** nanobench reports per-operation rates. For iteration and query benchmarks the "operation" is one full pass over the stated entity count, so the table already converts `ops/s × entity_count` into `entities/s`. For spawn, the operation is one batch of 10k spawns.
+
+### Sequential vs. parallel dispatch (3 independent systems, disjoint components)
+
+`Schedule`'s default constructor previously left its internal thread pool null — `Schedule schedule;` silently ran everything sequentially no matter how independent the systems were, so no prior benchmark ever measured real parallel throughput. Fixed: the default constructor now spins up `std::thread::hardware_concurrency()` worker threads (pass `0` explicitly for deterministic single-threaded execution).
+
+Turning that on for real exposed that unconditionally dispatching every independent batch to the thread pool is a net loss below a certain amount of work — the fixed dispatch cost (`enqueue` + `future::wait` per task, ~14-15µs for a 3-task batch on this hardware) doesn't pay for itself on cheap systems. `Schedule` now tracks each system's actual measured duration from its previous run and only dispatches a batch to the pool if its systems' summed last-measured cost clears `min_parallel_duration()` (default 20µs, configurable via `set_min_parallel_duration()`). A system is assumed cheap (and runs inline) until it's been measured once, so the very first `run()` call always executes inline regardless of thread availability — real parallel dispatch starts from the second call onward, once costs are known.
+
+| Entities per system | Sequential | Parallel, unconditional dispatch | Parallel, cost-aware dispatch (current) |
+|---|---|---|---|
+| 1,000 | ~1.13M frames/s | ~69k frames/s (**~16× slower**) | ~610k frames/s (**~1.9× slower** — remaining gap is DAG-construction bookkeeping, not thread dispatch) |
+| 10,000 | ~250k frames/s | ~67k frames/s (**~3.8× slower**) | ~219k frames/s (**~1.1× slower**) |
+| 100,000 | ~25.6k frames/s | ~31.7k frames/s (~1.25× faster) | ~32.8k frames/s (**~1.3× faster** — correctly still dispatches, since real work clears the threshold) |
+
+**Takeaway:** cost-aware dispatch turns "parallel is a 16x regression at small scale, a 1.25x win at large scale" into "roughly break-even at small scale, same win at large scale" — without the caller having to reason about crossover points themselves. If your systems' actual cost profile differs from this trivial microbenchmark (heavier per-entity work reaches the threshold at a much lower entity count), tune `set_min_parallel_duration()` accordingly.
+
+**Takeaway:** with 3 systems and this thread pool's dispatch cost (`enqueue` + `future::wait` per batch), parallel dispatch only pays off once each system's per-frame work is substantial (~100k+ entities in this microbenchmark). For smaller workloads, sequential dispatch is faster — `Schedule`'s automatic per-batch fallback to sequential execution when a batch has only one runnable system already avoids the overhead in the fully-serialized case (e.g. the "same component" row above), but genuinely independent systems on small worlds should be measured, not assumed to benefit from threading.
 
 ---
 
@@ -92,7 +108,7 @@ world.query<Position, Velocity>().each([](Position& pos, Velocity& vel) {
 ### ✅ Parallel: `each_par()`
 
 ```cpp
-detail::ThreadPool pool;
+ThreadPool pool; // prefer one shared pool per application over one per call site
 world.query<Position, Velocity>().each_par(pool, [](Position& pos, Velocity& vel) {
     pos.x += vel.dx; // each chunk runs on a different thread
 });

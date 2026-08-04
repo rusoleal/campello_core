@@ -6,10 +6,11 @@
 #include <future>
 #include <mutex>
 #include <queue>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
-namespace campello::core::detail {
+namespace campello::core {
 
 class ThreadPool {
 public:
@@ -74,4 +75,4 @@ private:
     bool stop_;
 };
 
-} // namespace campello::core::detail
+} // namespace campello::core

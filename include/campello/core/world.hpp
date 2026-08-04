@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -529,60 +530,74 @@ public:
 
     template<typename... Cs>
     Query<Cs...> query() {
-        (register_component<std::remove_cv_t<Cs>>(), ...);
-
         std::vector<ComponentId> key = {component_type_id<std::remove_cv_t<Cs>>()...};
         std::sort(key.begin(), key.end());
         key.erase(std::unique(key.begin(), key.end()), key.end());
 
-        auto cache_it = query_cache_.find(key);
-        if (cache_it == query_cache_.end() || cache_it->second.second != archetype_version_) {
-            std::vector<ArchetypeId> matching;
-            if (!key.empty()) {
-                const std::vector<ArchetypeId>* candidate_set = nullptr;
-                std::size_t candidate_idx = 0;
-                for (std::size_t r = 0; r < key.size(); ++r) {
-                    const auto* set = archetype_storage_.archetypes_with_component(key[r]);
-                    if (!set) {
-                        candidate_set = nullptr;
-                        break;
+        // Systems dispatched concurrently by Schedule::run_parallel all call
+        // query<Cs...>() from worker threads; register_component() and
+        // query_cache_ are shared mutable state (registry map, cache map)
+        // with no synchronization of their own, so both must be built under
+        // this lock. The lock is released before iteration (each()/each_par()
+        // run outside it), so contention is bounded by one query() call per
+        // system per frame, not per-entity.
+        std::vector<ArchetypeId> matching_archetypes;
+        std::uint64_t matching_version;
+        {
+            std::lock_guard<std::mutex> lock(query_mutex_);
+            (register_component<std::remove_cv_t<Cs>>(), ...);
+
+            auto cache_it = query_cache_.find(key);
+            if (cache_it == query_cache_.end() || cache_it->second.second != archetype_version_) {
+                std::vector<ArchetypeId> matching;
+                if (!key.empty()) {
+                    const std::vector<ArchetypeId>* candidate_set = nullptr;
+                    std::size_t candidate_idx = 0;
+                    for (std::size_t r = 0; r < key.size(); ++r) {
+                        const auto* set = archetype_storage_.archetypes_with_component(key[r]);
+                        if (!set) {
+                            candidate_set = nullptr;
+                            break;
+                        }
+                        if (!candidate_set || set->size() < candidate_set->size()) {
+                            candidate_set = set;
+                            candidate_idx = r;
+                        }
                     }
-                    if (!candidate_set || set->size() < candidate_set->size()) {
-                        candidate_set = set;
-                        candidate_idx = r;
-                    }
-                }
-                if (candidate_set) {
-                    if (key.size() == 1) {
-                        matching.assign(candidate_set->begin(), candidate_set->end());
-                    } else {
-                        matching.reserve(candidate_set->size());
-                        for (ArchetypeId id : *candidate_set) {
-                            Archetype* arch = archetype_storage_.get_archetype(id);
-                            if (!arch) continue;
-                            bool matches = true;
-                            for (std::size_t r = 0; r < key.size(); ++r) {
-                                if (r == candidate_idx) continue;
-                                if (!arch->has_component(key[r])) {
-                                    matches = false;
-                                    break;
+                    if (candidate_set) {
+                        if (key.size() == 1) {
+                            matching.assign(candidate_set->begin(), candidate_set->end());
+                        } else {
+                            matching.reserve(candidate_set->size());
+                            for (ArchetypeId id : *candidate_set) {
+                                Archetype* arch = archetype_storage_.get_archetype(id);
+                                if (!arch) continue;
+                                bool matches = true;
+                                for (std::size_t r = 0; r < key.size(); ++r) {
+                                    if (r == candidate_idx) continue;
+                                    if (!arch->has_component(key[r])) {
+                                        matches = false;
+                                        break;
+                                    }
                                 }
-                            }
-                            if (matches) {
-                                matching.push_back(id);
+                                if (matches) {
+                                    matching.push_back(id);
+                                }
                             }
                         }
                     }
                 }
+                query_cache_[key] = {std::move(matching), archetype_version_};
+                cache_it = query_cache_.find(key);
             }
-            query_cache_[key] = {std::move(matching), archetype_version_};
-            cache_it = query_cache_.find(key);
+            matching_archetypes = cache_it->second.first;
+            matching_version = cache_it->second.second;
         }
 
         auto q = Query<Cs...>(&archetype_storage_, &component_registry_, &archetype_version_,
                               &entity_meta_, &removed_components_);
         q.with_last_run_tick(change_tick_);
-        q.set_cached_archetypes(cache_it->second.first, archetype_version_);
+        q.set_cached_archetypes(matching_archetypes, matching_version);
         return q;
     }
 
@@ -1062,6 +1077,12 @@ private:
     // World-level query cache: maps sorted component-id set to matching archetypes.
     // Invalidated when archetype_version_ changes.
     std::map<std::vector<ComponentId>, std::pair<std::vector<ArchetypeId>, std::uint64_t>> query_cache_;
+    // Guards query_cache_ and component_registry_ registration, both of which
+    // query<Cs...>() mutates. Systems dispatched concurrently by Schedule are
+    // expected to only call query<Cs...>() (structural mutation is meant to
+    // go through CommandBuffer instead), so this is the one path that needs
+    // to be safe to call from multiple worker threads at once.
+    mutable std::mutex query_mutex_;
 
     using HookCallback = std::function<void(Entity, void*)>;
     std::unordered_map<ComponentId, std::vector<HookCallback>> on_add_hooks_;

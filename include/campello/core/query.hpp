@@ -4,7 +4,7 @@
 #include "component.hpp"
 #include "archetype.hpp"
 #include "detail/component_registry.hpp"
-#include "detail/thread_pool.hpp"
+#include "thread_pool.hpp"
 #include <future>
 #include <tuple>
 #include <type_traits>
@@ -184,7 +184,7 @@ public:
     // Parallel chunk iteration: each chunk is processed by a different thread.
     // The caller must ensure `func` is thread-safe (no mutable shared state).
     template<typename Func>
-    void each_par(detail::ThreadPool& pool, Func&& func) {
+    void each_par(ThreadPool& pool, Func&& func) {
         update_cache();
         if (!filter_removed_.empty()) {
             // Removed filters iterate a small per-frame event list; serial dispatch avoids

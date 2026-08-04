@@ -211,7 +211,7 @@ TEST_CASE("Query parallel chunk iteration") {
         world.spawn_with(Position{float(i), 0.0f, 0.0f}, Velocity{1.0f, 2.0f, 3.0f});
     }
 
-    campello::core::detail::ThreadPool pool(4);
+    campello::core::ThreadPool pool(4);
 
     std::atomic<int> count{0};
     std::atomic<float> sum{0.0f};

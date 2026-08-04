@@ -134,7 +134,7 @@ This document tracks the phases and tasks required to move the library from its 
 **Goal:** Replace the naive `std::async` implementation with scalable parallelism.
 
 - [x] **Thread pool implementation**
-  - [x] Lock-based task queue (`detail::ThreadPool`)
+  - [x] Lock-based task queue (`ThreadPool`, `thread_pool.hpp`)
   - [x] Configurable thread count (default: hardware concurrency)
   - [x] Graceful shutdown (join all workers in destructor)
 
@@ -150,6 +150,19 @@ This document tracks the phases and tasks required to move the library from its 
 - [x] **Thread-safe resource borrow tracking**
   - [x] `mutable_borrowed` and `immutable_borrows` changed from plain fields to `std::atomic`
   - [x] TSan clean on parallel schedule + parallel query access
+
+- [x] **Fixed: `Schedule()` default constructor never actually threaded**
+  - [x] `Schedule schedule;` left `pool_` null, so every prior "parallel" benchmark/test ran fully sequential regardless of system independence — nobody had ever measured or exercised the real multithreaded path. Default constructor now spins up `std::thread::hardware_concurrency()` workers (`schedule.hpp`); pass `0` explicitly for deterministic sequential execution.
+  - [x] Turning on real parallelism surfaced a genuine data race: `World::query<Cs...>()` mutates `query_cache_` and `component_registry_` (both unsynchronized) — two systems dispatched to different threads calling `query<...>()` concurrently raced on `std::map` node insertion. Caught by TSan via `tests/test_long_stress.cpp` (reliably reproduced across 5 seeds before the fix). Fixed with a `query_mutex_` guarding both in `world.hpp`; released before iteration so contention is bounded to once per system per frame, not per-entity.
+  - [x] Re-verified: full suite + long-stress (5 seeds) clean under TSan after the fix; see `docs/PERFORMANCE.md` for real (not stale) sequential-vs-parallel numbers.
+
+- [x] **Cost-aware batch dispatch (adaptive)**
+  - [x] Unconditional dispatch of every independent batch to the thread pool was a net loss below a certain amount of work (16x slower at 1k entities, 3.8x at 10k). `Schedule` now records each system's actual wall-clock duration from its previous run and only dispatches a batch to the pool if the batch's summed last-measured cost clears `min_parallel_duration()` (default 20us, calibrated from measured dispatch overhead; configurable via `set_min_parallel_duration()`).
+  - [x] A system is assumed cheap until measured once, so the first `run()` call is always inline; real parallel dispatch starts from the second call. `test_schedule.cpp`'s existing "parallel" tests call `set_min_parallel_duration(0)` to keep forcing real dispatch on a single call (they test conflict-serialization correctness, not the heuristic); two new tests (`Schedule keeps a cheap batch inline on its first run`, `Schedule dispatches to real threads once systems are measured as expensive`) pin the heuristic's own behavior.
+  - [x] Result: small-scale regression cut from ~16x/~3.8x slower to ~1.9x/~1.1x slower; the large-scale win (100k entities) is unaffected. See `docs/PERFORMANCE.md`.
+  - [x] **Fixed: shared external thread pool + public `ThreadPool`**
+    - [x] `ThreadPool` promoted out of `campello::core::detail` into public `campello::core` (`thread_pool.hpp`, top-level, was `detail/thread_pool.hpp`) — it was already de-facto public API (required by `each_par(ThreadPool&, ...)`, used directly in `examples/ex_08_thread_pool.cpp`), so leaving it under `detail::` was misleading. **Breaking** for anyone referencing `campello::core::detail::ThreadPool` or including `detail/thread_pool.hpp` directly.
+    - [x] `Schedule(ThreadPool&)` — new constructor accepting an externally-owned pool instead of always constructing its own. `Schedule` internally now tracks the pool via a non-owning raw pointer (`pool_`), with `owned_pool_` populated only by the `Schedule(size_t num_threads)` constructor. Lets an application own one `ThreadPool` for its whole process — sized with headroom for render/input/audio threads — and share it across every `Schedule` instance and every `each_par()` call instead of each one spinning up its own `hardware_concurrency()` workers.
 
 ---
 
@@ -304,10 +317,11 @@ The library can be called production-ready when:
 
 | Deliverable | Files |
 |---|---|
-| Thread pool with task queue | `detail/thread_pool.hpp` |
+| Thread pool with task queue | `thread_pool.hpp` |
 | Schedule parallel DAG execution | `schedule.hpp` |
 | Parallel query iteration (`each_par`) | `query.hpp` |
 | Thread-safe resource borrow tracking | `resource.hpp` |
+| Adaptive cost-aware batch dispatch, shared external `ThreadPool` | `schedule.hpp`, `thread_pool.hpp` |
 
 ### Phase 5 — Missing Production Features
 
@@ -344,4 +358,4 @@ The library can be called production-ready when:
 
 ---
 
-*Last updated: 2026-08-03*
+*Last updated: 2026-08-04*

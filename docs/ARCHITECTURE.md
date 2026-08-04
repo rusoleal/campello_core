@@ -290,7 +290,9 @@ Per stage:
 
 ### ThreadPool
 
-Lock-based task queue with `std::future` support. Default thread count = `hardware_concurrency()`.
+`campello::core::ThreadPool` (public API, `thread_pool.hpp`) — lock-based task queue with `std::future` support. Default thread count = `hardware_concurrency()`.
+
+Own one `ThreadPool` per application rather than letting every `Schedule`/`each_par()` call create its own — construct it once wherever your engine bootstraps (alongside your render/input threads), size it with headroom for those, and pass it by reference everywhere: `Schedule(pool)` and `query<...>().each_par(pool, ...)` both accept an external pool instead of owning one.
 
 ---
 

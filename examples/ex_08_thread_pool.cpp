@@ -1,5 +1,5 @@
 #include <campello/core/core.hpp>
-#include <campello/core/detail/thread_pool.hpp>
+#include <campello/core/thread_pool.hpp>
 #include <iostream>
 #include <cmath>
 
@@ -25,7 +25,7 @@ int main() {
     }
 
     // Thread pool with hardware-concurrency threads
-    detail::ThreadPool pool;
+    ThreadPool pool;
     std::cout << "Thread pool: " << pool.size() << " threads\n";
 
     // Parallel chunk iteration — each chunk processed by a different thread
