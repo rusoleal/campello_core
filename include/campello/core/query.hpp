@@ -74,10 +74,10 @@ public:
           entity_meta_(entity_meta), removed_components_(removed_components) {}
 
     // Pre-populate matching archetypes from a world-level cache.
-    // `version` must be the current archetype_version_ of the world.
-    void set_cached_archetypes(const std::vector<ArchetypeId>& archetypes, std::uint64_t version) {
+    // `archetype_version` must be the current archetype_version_ of the world.
+    void set_cached_archetypes(const std::vector<ArchetypeId>& archetypes, std::uint64_t archetype_version) {
         matching_archetypes_ = archetypes;
-        cached_version_ = version;
+        cached_version_ = archetype_version;
     }
 
     // Access the cached matching archetypes (for world-level query caching).
