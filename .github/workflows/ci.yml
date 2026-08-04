@@ -239,3 +239,21 @@ jobs:
 
       - name: Build smoke test
         run: cmake --build build --target smoke_test --parallel
+
+      # Simulator binaries run natively on the macOS host (no CPU emulation),
+      # so unlike ios-device (real ARM64 hardware, no runner available for
+      # that), we can actually execute this one via simctl instead of just
+      # compiling it.
+      - name: Boot iOS Simulator
+        if: matrix.platform.name == 'ios-simulator'
+        timeout-minutes: 10
+        run: |
+          DEVICE_UDID=$(xcrun simctl list devices available -j | jq -r '[.devices[][] | select(.name | test("iPhone"))][0].udid')
+          echo "Booting simulator device $DEVICE_UDID"
+          echo "DEVICE_UDID=$DEVICE_UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$DEVICE_UDID"
+          xcrun simctl bootstatus "$DEVICE_UDID" -b
+
+      - name: Run smoke test (iOS Simulator)
+        if: matrix.platform.name == 'ios-simulator'
+        run: xcrun simctl spawn "$DEVICE_UDID" "${{ github.workspace }}/build/smoke_test"
