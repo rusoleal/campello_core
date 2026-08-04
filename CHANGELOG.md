@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Changed `null_entity` from `0` to `std::numeric_limits<Entity>::max()` to prevent collision with the first spawned entity. This fixes a critical swap-back metadata corruption bug: when entity 0 (value `0`) was swapped during archetype moves, the caller treated it as `null_entity` and skipped updating its `entity_meta_`, leading to stale component pointers.
+- Fixed a heap-use-after-free in query iteration: `ArchetypeStorage::archetypes_` was a `std::vector<Archetype>`, so creating a new archetype (e.g. removing a component during `each()` produces a never-before-seen component combination) could reallocate the vector and invalidate `Archetype*` pointers cached by an in-flight query. Changed to `std::deque<Archetype>`, which keeps references/pointers stable across `push_back`.
 
 ## [0.1.0] - 2026-04-24
 

@@ -7,6 +7,7 @@
 #include "detail/component_registry.hpp"
 #include <algorithm>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <memory>
 #include <unordered_map>
@@ -193,7 +194,10 @@ private:
 
     std::size_t chunk_size_ = 16 * 1024;
     detail::ArenaAllocator allocator_;
-    std::vector<Archetype> archetypes_;
+    // deque (not vector): push_back must not invalidate existing Archetype*
+    // pointers, since queries cache them across archetype-creating callbacks
+    // (e.g. removing a component during iteration can create a new archetype).
+    std::deque<Archetype> archetypes_;
     std::map<std::vector<ComponentId>, ArchetypeId> archetype_map_;
     ArchetypeId next_archetype_id_ = 1;
     std::unordered_map<ComponentId, std::vector<ArchetypeId>> component_to_archetypes_;
