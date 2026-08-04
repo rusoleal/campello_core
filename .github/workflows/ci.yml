@@ -256,4 +256,4 @@ jobs:
 
       - name: Run smoke test (iOS Simulator)
         if: matrix.platform.name == 'ios-simulator'
-        run: xcrun simctl spawn "$DEVICE_UDID" "${{ github.workspace }}/build/smoke_test"
+        run: xcrun simctl spawn "$DEVICE_UDID" "${{ github.workspace }}/build/smoke_test.app/smoke_test"
