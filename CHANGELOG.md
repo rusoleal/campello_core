@@ -61,5 +61,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Spatial grid collision in demo → 2344 FPS (was 12 FPS with naive O(n²))
 - `each_with_entity()` for particle/emitter systems → 6044 FPS (2.6× improvement)
 
-[0.2.0]: https://github.com/rusoleal/campello/releases/tag/v0.2.0
-[0.1.0]: https://github.com/rusoleal/campello/releases/tag/v0.1.0
+[0.2.0]: https://github.com/rusoleal/campello_core/releases/tag/v0.2.0
+[0.1.0]: https://github.com/rusoleal/campello_core/releases/tag/v0.1.0
