@@ -105,6 +105,60 @@ TEST_CASE("Query iteration after entity removed from matching archetype") {
     REQUIRE(count >= 0);
 }
 
+namespace {
+struct RegressionTagA {};
+struct RegressionTagB {};
+struct RegressionTagC {};
+struct RegressionTagD {};
+struct RegressionTagE {};
+}
+
+// Regression test for a heap-use-after-free: ArchetypeStorage used to store
+// archetypes in a std::vector<Archetype>, so creating a brand-new archetype
+// mid-query (find_or_create_archetype -> push_back) could reallocate that
+// vector and invalidate the Archetype* the query had cached for the
+// archetype it was actively iterating, even though that archetype itself
+// was never touched. This mutates an unrelated entity (not part of the
+// iterated archetype) specifically to isolate archetype-storage growth from
+// the already-documented swap-back reordering that happens when the
+// iterated entity itself changes archetype.
+TEST_CASE("Query data stays valid when an unrelated archetype is created during iteration") {
+    World world;
+
+    std::vector<Entity> iterated;
+    for (int i = 0; i < 50; ++i) {
+        iterated.push_back(world.spawn_with(Position{float(i), 0.0f, 0.0f},
+                                             Velocity{float(i) * 0.1f, 0.0f, 0.0f}));
+    }
+
+    // Not part of the {Position, Velocity} archetype being iterated below.
+    Entity side = world.spawn_with(Health{0});
+
+    int visited = 0;
+    world.query<Position, Velocity>().each([&](Position& pos, Velocity& vel) {
+        // Force a never-before-seen archetype for `side` on almost every
+        // step, growing ArchetypeStorage::archetypes_ repeatedly during a
+        // single iteration pass.
+        switch (visited) {
+            case 0: world.insert<RegressionTagA>(side); break;
+            case 1: world.insert<RegressionTagB>(side); break;
+            case 2: world.insert<RegressionTagC>(side); break;
+            case 3: world.insert<RegressionTagD>(side); break;
+            case 4: world.insert<RegressionTagE>(side); break;
+            default: break;
+        }
+
+        // A stale Archetype* would surface here as a crash (heap-use-after-
+        // free, caught by ASan) or as data that no longer matches what was
+        // spawned.
+        REQUIRE(pos.x == float(visited));
+        REQUIRE(vel.dx == float(visited) * 0.1f);
+        ++visited;
+    });
+
+    REQUIRE(visited == static_cast<int>(iterated.size()));
+}
+
 TEST_CASE("Query iteration after entity inserted into matching archetype") {
     World world;
     std::vector<Entity> entities;
