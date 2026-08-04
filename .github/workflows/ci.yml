@@ -100,7 +100,7 @@ jobs:
     name: ${{ matrix.name }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure CMake
         env:
@@ -132,7 +132,7 @@ jobs:
     name: android-ndk-${{ matrix.abi }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Android NDK
         uses: android-actions/setup-android@v3
@@ -170,7 +170,7 @@ jobs:
     name: ${{ matrix.config.name }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
@@ -221,7 +221,7 @@ jobs:
     name: ${{ matrix.platform.name }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
