@@ -115,9 +115,11 @@ This document tracks the phases and tasks required to move the library from its 
 | OS | Compiler | Flags | Sanitizers |
 |---|---|---|---|
 | Ubuntu | GCC | `-Wall -Wextra -Wpedantic -Werror` | ASan + UBSan |
-| Windows | MSVC | `/W4 /WX` | — |
-| macOS | AppleClang | `-Wall -Wextra -Wpedantic -Werror` | TSan |
-| macOS | AppleClang | `-O2 -Wall -Wextra -Werror` (Release) | — |
+| Windows (x64) | MSVC | `/W4 /WX` | — |
+| Windows (ARM64, native `windows-11-arm`) | MSVC | `/W4 /WX` | — |
+| macOS (ARM64) | AppleClang | `-Wall -Wextra -Wpedantic -Werror` | TSan |
+| macOS (ARM64) | AppleClang | `-O2 -Wall -Wextra -Werror` (Release) | — |
+| macOS (x64, native `macos-26-intel`) | AppleClang | `-Wall -Wextra -Wpedantic -Werror` | — |
 
 **Fixes applied for portability:**
 - `resource.hpp`: Replaced POSIX-only `posix_memalign` with `_aligned_malloc` on Windows

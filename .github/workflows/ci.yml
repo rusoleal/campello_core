@@ -52,6 +52,15 @@ jobs:
               -DCMAKE_BUILD_TYPE=Debug
               -DCMAKE_CXX_FLAGS="-W4 -WX -EHsc"
 
+          # ── Windows ARM64 + MSVC (native) ──
+          - os: windows-11-arm
+            name: win-arm64-msvc
+            cc: cl
+            cxx: cl
+            cmake_args: >-
+              -DCMAKE_BUILD_TYPE=Debug
+              -DCMAKE_CXX_FLAGS="-W4 -WX -EHsc"
+
           # ── macOS ARM64 + AppleClang ──
           - os: macos-latest
             name: macos-arm64-clang
@@ -78,6 +87,15 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release
               -DCMAKE_CXX_FLAGS="-O2 -Wall -Wextra -Werror"
 
+          # ── macOS x86_64 + AppleClang (Intel) ──
+          - os: macos-26-intel
+            name: macos-x64-clang
+            cc: clang
+            cxx: clang++
+            cmake_args: >-
+              -DCMAKE_BUILD_TYPE=Debug
+              -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Werror"
+
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
 
@@ -101,27 +119,6 @@ jobs:
       - name: Test
         working-directory: build
         run: ctest --output-on-failure --build-config Debug -j1
-
-  windows-arm64:
-    name: win-arm64-msvc (cross)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure CMake (ARM64)
-        run: |
-          cmake -B build -S . -A ARM64 \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_FLAGS="-W4 -WX -EHsc" \
-            -DCAMPELLO_CORE_BUILD_TESTS=OFF \
-            -DCAMPELLO_CORE_BUILD_EXAMPLES=OFF \
-            -DCAMPELLO_CORE_BUILD_BENCHMARKS=OFF
-
-      - name: Build
-        run: cmake --build build --config Debug --parallel
-
-      - name: Compile smoke test
-        run: cmake --build build --target smoke_test --config Debug --parallel
 
   android:
     strategy:
