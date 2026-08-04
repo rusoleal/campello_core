@@ -256,4 +256,22 @@ jobs:
 
       - name: Run smoke test (iOS Simulator)
         if: matrix.platform.name == 'ios-simulator'
-        run: xcrun simctl spawn "$DEVICE_UDID" "${{ github.workspace }}/build/smoke_test.app/smoke_test"
+        timeout-minutes: 5
+        run: |
+          BIN="${{ github.workspace }}/build/smoke_test.app/smoke_test"
+          # simctl spawn occasionally fails with an opaque CoreSimulator/XPC
+          # error (e.g. LaunchdSimError code=153 "Completely unexpected
+          # error") that isn't reproducible locally and isn't specific to
+          # this binary -- known CoreSimulator flakiness in CI. Retry a
+          # few times before giving up.
+          attempt=1
+          max_attempts=3
+          until xcrun simctl spawn "$DEVICE_UDID" "$BIN"; do
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "simctl spawn failed after $max_attempts attempts"
+              exit 1
+            fi
+            echo "simctl spawn failed (attempt $attempt/$max_attempts), retrying..."
+            attempt=$((attempt + 1))
+            sleep 5
+          done
