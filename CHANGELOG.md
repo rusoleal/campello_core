@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **`ThreadPool` without workers runs tasks inline.** `ThreadPool(0)` used to accept tasks that never ran; `enqueue()` now runs them on the calling thread and returns a ready future. Builds without threads (Emscripten without pthreads, where starting a `std::thread` aborts) always get a pool without workers (`ThreadPool::kThreadsAvailable`), so `Schedule`, `each_par()` and apps that own a pool work single-threaded on the web.
+
 ## [0.2.0] - 2026-08-03
 
 ### Added

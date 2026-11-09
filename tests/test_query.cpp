@@ -1,3 +1,5 @@
+#include <chrono>
+#include <future>
 #include <catch2/catch_test_macros.hpp>
 #include "test_components.hpp"
 
@@ -226,6 +228,28 @@ TEST_CASE("Query parallel chunk iteration") {
     // Original sum = 0+1+2+...+999 = 999*1000/2 = 499500
     // After increment = 499500 + 1000 = 500500
     REQUIRE(sum.load() == 500500.0f);
+}
+
+TEST_CASE("ThreadPool without workers runs tasks inline") {
+    campello::core::ThreadPool pool(0);
+    REQUIRE(pool.size() == 0);
+    auto future = pool.enqueue([](int a, int b) { return a + b; }, 2, 3);
+    REQUIRE(future.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+    REQUIRE(future.get() == 5);
+}
+
+TEST_CASE("Query parallel chunk iteration with a pool without workers") {
+    World world;
+    for (int i = 0; i < 100; ++i) {
+        world.spawn_with(Position{float(i), 0.0f, 0.0f}, Velocity{1.0f, 2.0f, 3.0f});
+    }
+    campello::core::ThreadPool pool(0);
+    int count = 0;
+    world.query<Position, Velocity>().each_par(pool, [&](Position& pos, Velocity& vel) {
+        pos.x += vel.dx;
+        ++count;
+    });
+    REQUIRE(count == 100);
 }
 
 // Phase 6: Change detection tests ----------------------------------------------

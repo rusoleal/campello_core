@@ -14,8 +14,20 @@ namespace campello::core {
 
 class ThreadPool {
 public:
+    /// False where std::thread can't start threads (Emscripten without pthreads).
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+    static constexpr bool kThreadsAvailable = false;
+#else
+    static constexpr bool kThreadsAvailable = true;
+#endif
+
+    /// Starts `num_threads` workers. With none (`num_threads == 0`, or a
+    /// build without threads: single-threaded Emscripten), enqueue() runs
+    /// each task inline on the calling thread, so the returned future is
+    /// already ready.
     explicit ThreadPool(std::size_t num_threads = std::thread::hardware_concurrency())
         : stop_(false) {
+        if (!kThreadsAvailable) num_threads = 0;
         for (std::size_t i = 0; i < num_threads; ++i) {
             workers_.emplace_back([this] {
                 for (;;) {
@@ -56,6 +68,10 @@ public:
         );
 
         std::future<return_type> res = task->get_future();
+        if (workers_.empty()) {
+            (*task)();  // no workers: run inline (see the constructor)
+            return res;
+        }
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             if (stop_) throw std::runtime_error("enqueue on stopped ThreadPool");
