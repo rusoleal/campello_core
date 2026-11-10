@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-10
+
 ### Changed
 - **`ThreadPool` without workers runs tasks inline.** `ThreadPool(0)` used to accept tasks that never ran; `enqueue()` now runs them on the calling thread and returns a ready future. Builds without threads (Emscripten without pthreads, where starting a `std::thread` aborts) always get a pool without workers (`ThreadPool::kThreadsAvailable`), so `Schedule`, `each_par()` and apps that own a pool work single-threaded on the web.
 
@@ -66,5 +68,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Spatial grid collision in demo → 2344 FPS (was 12 FPS with naive O(n²))
 - `each_with_entity()` for particle/emitter systems → 6044 FPS (2.6× improvement)
 
+[0.2.1]: https://github.com/rusoleal/campello_core/releases/tag/v0.2.1
 [0.2.0]: https://github.com/rusoleal/campello_core/releases/tag/v0.2.0
 [0.1.0]: https://github.com/rusoleal/campello_core/releases/tag/v0.1.0
